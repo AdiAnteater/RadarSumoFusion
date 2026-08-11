@@ -1,0 +1,10 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<additional>
+    <vType id="car" vClass="passenger" length="4.5" maxSpeed="16.67" accel="2.6" decel="4.5" sigma="0.5" tau="1.0" lcStrategic="1.0" lcAssertive="1.0" lcSpeedGain="1.0" color="0.3,0.3,0.9"/>
+    <vType id="car_aggressive" vClass="passenger" length="4.5" maxSpeed="22.0" accel="3.5" decel="5.0" sigma="0.2" tau="0.6" lcStrategic="2.5" lcAssertive="3.0" lcSpeedGain="2.5" lcKeepRight="0.2" color="0.9,0.1,0.1"/>
+    <vType id="car_slow" vClass="passenger" length="4.5" maxSpeed="9.0" accel="1.5" decel="4.0" sigma="0.3" tau="1.5" lcStrategic="0.5" lcAssertive="0.5" lcSpeedGain="0.2" color="0.2,0.7,0.2"/>
+    <vType id="bus" vClass="bus" length="12.0" maxSpeed="13.89" accel="1.2" decel="3.5" sigma="0.1" tau="1.5" color="0.9,0.6,0.0"/>
+    <vType id="truck" vClass="truck" length="10.0" maxSpeed="11.11" accel="1.0" decel="3.0" sigma="0.2" tau="1.8" lcStrategic="0.8" lcAssertive="0.5" color="0.5,0.3,0.1"/>
+    <vType id="truck_large" vClass="truck" length="16.0" width="2.55" height="4.0" maxSpeed="11.11" accel="0.8" decel="2.5" sigma="0.1" tau="2.0" lcStrategic="0.3" lcAssertive="0.3" color="0.3,0.2,0.1"/>
+    <vType id="motorcycle" vClass="motorcycle" length="2.2" maxSpeed="20.0" accel="4.0" decel="5.0" sigma="0.4" tau="0.8" lcStrategic="1.5" lcAssertive="2.0" color="0.8,0.0,0.8"/>
+</additional>

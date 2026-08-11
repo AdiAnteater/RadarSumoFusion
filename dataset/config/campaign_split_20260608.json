@@ -1,0 +1,272 @@
+{
+  "created_for": "campaign_manifest_20260608.csv",
+  "git_commit": "ae8ccd6",
+  "classes": [
+    "car",
+    "truck",
+    "pedestrian"
+  ],
+  "params": {
+    "sizes": [
+      7,
+      2,
+      2
+    ],
+    "k": 5,
+    "seed": 0,
+    "alpha_size": 0.5,
+    "dropped_runs": [
+      12
+    ],
+    "split_level": "capture (group); never split a capture"
+  },
+  "dropped": {
+    "12": "sensor_capture_20260610_011903"
+  },
+  "global_composition": {
+    "car": 0.55421,
+    "truck": 0.226553,
+    "pedestrian": 0.219237
+  },
+  "captures": {
+    "1": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_215112",
+      "dir_name": "sensor_capture_20260609_215112",
+      "seed": "20261609",
+      "minutes": 16.4,
+      "counts": {
+        "car": 68094.5,
+        "truck": 17583.6,
+        "pedestrian": 28802.9
+      },
+      "source": "qa_summary"
+    },
+    "2": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_220726",
+      "dir_name": "sensor_capture_20260609_220726",
+      "seed": "20261610",
+      "minutes": 17.1,
+      "counts": {
+        "car": 176365.3,
+        "truck": 36922.4,
+        "pedestrian": 33629.5
+      },
+      "source": "qa_summary"
+    },
+    "3": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_222432",
+      "dir_name": "sensor_capture_20260609_222432",
+      "seed": "20261611",
+      "minutes": 18.3,
+      "counts": {
+        "car": 121697.4,
+        "truck": 43553.5,
+        "pedestrian": 46123.9
+      },
+      "source": "qa_summary"
+    },
+    "4": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_224249",
+      "dir_name": "sensor_capture_20260609_224249",
+      "seed": "20261612",
+      "minutes": 16.3,
+      "counts": {
+        "car": 85326.1,
+        "truck": 35875.1,
+        "pedestrian": 18812.8
+      },
+      "source": "qa_summary"
+    },
+    "5": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_225905",
+      "dir_name": "sensor_capture_20260609_225905",
+      "seed": "20261613",
+      "minutes": 17.3,
+      "counts": {
+        "car": 61271.4,
+        "truck": 24119.3,
+        "pedestrian": 36854.1
+      },
+      "source": "qa_summary"
+    },
+    "6": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_231622",
+      "dir_name": "sensor_capture_20260609_231622",
+      "seed": "20261614",
+      "minutes": 17.8,
+      "counts": {
+        "car": 86429.7,
+        "truck": 17177.2,
+        "pedestrian": 34388.1
+      },
+      "source": "qa_summary"
+    },
+    "7": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_233408",
+      "dir_name": "sensor_capture_20260609_233408",
+      "seed": "20261615",
+      "minutes": 27.1,
+      "counts": {
+        "car": 184379.0,
+        "truck": 156039.3,
+        "pedestrian": 55164.2
+      },
+      "source": "qa_summary"
+    },
+    "8": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_000116",
+      "dir_name": "sensor_capture_20260610_000116",
+      "seed": "20261616",
+      "minutes": 28.0,
+      "counts": {
+        "car": 151605.7,
+        "truck": 58401.2,
+        "pedestrian": 108739.4
+      },
+      "source": "qa_summary"
+    },
+    "9": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_002914",
+      "dir_name": "sensor_capture_20260610_002914",
+      "seed": "20261617",
+      "minutes": 17.4,
+      "counts": {
+        "car": 82803.1,
+        "truck": 24302.6,
+        "pedestrian": 48013.6
+      },
+      "source": "qa_summary"
+    },
+    "10": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_004640",
+      "dir_name": "sensor_capture_20260610_004640",
+      "seed": "20261618",
+      "minutes": 15.4,
+      "counts": {
+        "car": 59707.7,
+        "truck": 16762.0,
+        "pedestrian": 38797.3
+      },
+      "source": "qa_summary"
+    },
+    "11": {
+      "capture_dir": "/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_010207",
+      "dir_name": "sensor_capture_20260610_010207",
+      "seed": "20261619",
+      "minutes": 16.9,
+      "counts": {
+        "car": 117766.3,
+        "truck": 57943.5,
+        "pedestrian": 23574.4
+      },
+      "source": "qa_summary"
+    }
+  },
+  "holdout": {
+    "sizes": [
+      7,
+      2,
+      2
+    ],
+    "train": [
+      1,
+      2,
+      3,
+      6,
+      7,
+      8,
+      10
+    ],
+    "val": [
+      4,
+      5
+    ],
+    "test": [
+      9,
+      11
+    ],
+    "global_composition": {
+      "car": 0.55421,
+      "truck": 0.226553,
+      "pedestrian": 0.219237
+    },
+    "composition": {
+      "train": {
+        "car": 0.550701,
+        "truck": 0.224907,
+        "pedestrian": 0.224392
+      },
+      "val": {
+        "car": 0.55898,
+        "truck": 0.22876,
+        "pedestrian": 0.21226
+      },
+      "test": {
+        "car": 0.565935,
+        "truck": 0.232069,
+        "pedestrian": 0.201996
+      }
+    },
+    "objective": 0.136499,
+    "L_comp": 0.058748,
+    "L_size": 0.155502
+  },
+  "kfold": {
+    "k": 5,
+    "seed": 0,
+    "folds": {
+      "1": 0,
+      "2": 3,
+      "3": 3,
+      "4": 4,
+      "5": 0,
+      "6": 4,
+      "7": 1,
+      "8": 2,
+      "9": 1,
+      "10": 0,
+      "11": 2
+    },
+    "fold_sizes": {
+      "0": 3,
+      "1": 2,
+      "2": 2,
+      "3": 2,
+      "4": 2
+    },
+    "fold_composition": {
+      "0": {
+        "car": 0.537152,
+        "truck": 0.166097,
+        "pedestrian": 0.296751
+      },
+      "1": {
+        "car": 0.485167,
+        "truck": 0.327477,
+        "pedestrian": 0.187357
+      },
+      "2": {
+        "car": 0.519993,
+        "truck": 0.22459,
+        "pedestrian": 0.255417
+      },
+      "3": {
+        "car": 0.650377,
+        "truck": 0.175599,
+        "pedestrian": 0.174023
+      },
+      "4": {
+        "car": 0.617806,
+        "truck": 0.19083,
+        "pedestrian": 0.191364
+      }
+    },
+    "rotation": "for fold f in 0..k-1:  test=f,  val=(f+1)%k,  train=the rest. Report mean+-std over the k folds."
+  },
+  "notes": [
+    "Capture-level split: leakage-free because temporally-correlated frames of a capture never straddle splits.",
+    "Shuffle snippets WITHIN the train split for SGD; never shuffle across the split boundary. Val/test are evaluated unshuffled.",
+    "Fit class weights / feature normalisation on TRAIN only.",
+    "holdout is the recommended pilot; kfold backs the headline TACA~=self-attn>early claim across all 5 folds."
+  ]
+}

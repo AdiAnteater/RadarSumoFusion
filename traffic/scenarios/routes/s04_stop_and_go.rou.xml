@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    SCENARIO 4: STOP AND GO (shockwave)
+    Shockwave seeds are commanded by StopAndGoController in runner.py: each
+    seed stops for 15 s and moves for 15 s while it is on edge 20 / -20.
+
+    Routes are rewritten at runtime by ambient_traffic.apply_map_edge_routes,
+    so the edge lists below are documentation of what will be used, not the
+    authoritative copy. Map edge to map edge, through the monitored stretch.
+
+    departLane FIX: the seeds used departLane="0" and departLane="1". On this
+    network lane index 0 is the SIDEWALK and index 1 is a disallow="all"
+    shoulder. Seeds on lane 0 drove down the pavement and dead-ended at the
+    first junction; seeds on lane 1 could not depart at all. Lanes 3 and 4 are
+    the two driving lanes (3 = curb side, 4 = inner).
+-->
+<routes>
+    <route id="WB_route" edges="-1 -2 21 20 19 18 5"/>
+    <route id="EB_route" edges="-5 -18 -19 -20 -21 2 1"/>
+
+    <flow id="WB_stopgo"
+          type="car" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="EB_stopgo"
+          type="car" route="EB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_EB"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+
+    <vehicle id="shockwave_seed_wb_1" type="car_slow" route="WB_route" depart="30"  departLane="3" departSpeed="0" color="1,0,0"/>
+    <vehicle id="shockwave_seed_wb_2" type="car_slow" route="WB_route" depart="120" departLane="4" departSpeed="0" color="1,0,0"/>
+    <vehicle id="shockwave_seed_wb_3" type="car_slow" route="WB_route" depart="210" departLane="3" departSpeed="0" color="1,0,0"/>
+
+    <vehicle id="shockwave_seed_eb_1" type="car_slow" route="EB_route" depart="30"  departLane="3" departSpeed="0" color="1,0,0"/>
+    <vehicle id="shockwave_seed_eb_2" type="car_slow" route="EB_route" depart="120" departLane="4" departSpeed="0" color="1,0,0"/>
+    <vehicle id="shockwave_seed_eb_3" type="car_slow" route="EB_route" depart="210" departLane="3" departSpeed="0" color="1,0,0"/>
+</routes>

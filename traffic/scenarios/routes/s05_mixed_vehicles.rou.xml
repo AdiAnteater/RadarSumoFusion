@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SCENARIO 5: MIXED VEHICLES - cars, trucks, motorcycles, buses -->
+<routes>
+    <route id="WB_route" edges="-1 -2 21 20 19 18 5"/>
+    <route id="EB_route" edges="-5 -18 -19 -20 -21 2 1"/>
+
+    <flow id="WB_car"
+          type="car" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB_55"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="WB_truck"
+          type="truck" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB_25"
+          departLane="first" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="WB_moto"
+          type="motorcycle" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB_10"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="WB_bus"
+          type="bus" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB_10"
+          departLane="first" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="EB_car"
+          type="car" route="EB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_EB_60"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="EB_truck"
+          type="truck" route="EB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_EB_30"
+          departLane="first" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="EB_moto"
+          type="motorcycle" route="EB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_EB_10"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+</routes>

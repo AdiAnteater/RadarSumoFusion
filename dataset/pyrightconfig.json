@@ -1,0 +1,6 @@
+{
+  "include": ["."],
+  "extraPaths": ["."],
+  "venvPath": "../..",
+  "venv": ".venv"
+}

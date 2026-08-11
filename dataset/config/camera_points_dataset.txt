@@ -1,0 +1,3 @@
+Camera points used in DatasetCreation.py
+
+C10: Transform(Location(x=-43.000000, y=20.700001, z=6.500000), Rotation(pitch=-15.000000, yaw=0.000000, roll=0.000000))

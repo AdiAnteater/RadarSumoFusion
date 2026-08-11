@@ -1,0 +1,9 @@
+# Generated capture/labeling output (can be many GB) — never commit.
+Data/
+
+# Machine-local runtime pointers to the most recent run dir (absolute paths).
+.last_dataset_capture_dir
+.last_radar_labeling_test_dir
+
+# Local working notes / generated summaries — not part of the codebase.
+claude_summary.md

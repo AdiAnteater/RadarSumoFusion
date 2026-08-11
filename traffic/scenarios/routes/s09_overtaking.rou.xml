@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SCENARIO 9: OVERTAKING - slow right lane, fast left lane -->
+<routes>
+    <route id="WB_route" edges="-1 -2 21 20 19 18 5"/>
+    <route id="EB_route" edges="-5 -18 -19 -20 -21 2 1"/>
+
+    <flow id="WB_slow"
+          type="car_slow" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB_50"
+          departLane="first" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="WB_fast"
+          type="car_aggressive" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB_50"
+          departLane="best" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="EB_slow"
+          type="car_slow" route="EB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_EB_50"
+          departLane="first" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="EB_fast"
+          type="car_aggressive" route="EB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_EB_50"
+          departLane="best" departSpeed="0" arrivalSpeed="current"/>
+</routes>

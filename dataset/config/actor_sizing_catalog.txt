@@ -1,0 +1,114 @@
+CARLA actor sizing catalog
+All dimensions are full extents in meters (length = 2*extent.x, width = 2*extent.y, height = 2*extent.z).
+Axes are in the actor's local frame: x=forward, y=right, z=up.
+
+=== Vehicle blueprints ===
+
+[base_type: Bus]
+  vehicle.mitsubishi.fusorosa                     L=10.273  W= 3.944  H= 4.253
+
+[base_type: bicycle]
+  vehicle.bh.crossbike                            L= 1.509  W= 0.866  H= 1.612
+  vehicle.diamondback.century                     L= 1.656  W= 0.582  H= 1.620
+  vehicle.gazelle.omafiets                        L= 1.843  W= 0.659  H= 1.776
+
+[base_type: car]
+  vehicle.audi.a2                                 L= 3.705  W= 1.789  H= 1.549
+  vehicle.audi.etron                              L= 4.856  W= 2.033  H= 1.649  special=electric
+  vehicle.audi.tt                                 L= 4.181  W= 1.994  H= 1.385
+  vehicle.chevrolet.impala                        L= 5.357  W= 2.033  H= 1.411
+  vehicle.citroen.c3                              L= 3.988  W= 1.851  H= 1.617
+  vehicle.dodge.charger_2020                      L= 5.008  W= 1.882  H= 1.535
+  vehicle.dodge.charger_police                    L= 4.974  W= 2.038  H= 1.542  special=emergency
+  vehicle.dodge.charger_police_2020               L= 5.238  W= 1.930  H= 1.638  special=emergency
+  vehicle.ford.crown                              L= 5.366  W= 1.801  H= 1.575  special=taxi
+  vehicle.ford.mustang                            L= 4.718  W= 1.895  H= 1.301
+  vehicle.jeep.wrangler_rubicon                   L= 3.866  W= 1.905  H= 1.878
+  vehicle.lincoln.mkz_2017                        L= 4.902  W= 2.128  H= 1.511
+  vehicle.lincoln.mkz_2020                        L= 4.892  W= 1.837  H= 1.490
+  vehicle.mercedes.coupe                          L= 5.027  W= 2.152  H= 1.651
+  vehicle.mercedes.coupe_2020                     L= 4.674  W= 1.812  H= 1.442
+  vehicle.micro.microlino                         L= 2.207  W= 1.481  H= 1.376  special=electric
+  vehicle.mini.cooper_s_2021                      L= 4.553  W= 2.097  H= 1.767
+  vehicle.nissan.micra                            L= 3.633  W= 1.845  H= 1.501
+  vehicle.nissan.patrol                           L= 4.605  W= 1.932  H= 1.855
+  vehicle.nissan.patrol_2021                      L= 5.566  W= 2.150  H= 2.045
+  vehicle.seat.leon                               L= 4.193  W= 1.816  H= 1.474
+  vehicle.tesla.model3                            L= 4.792  W= 2.163  H= 1.488  special=electric
+  vehicle.toyota.prius                            L= 4.514  W= 2.007  H= 1.525  special=electric
+
+[base_type: motorcycle]
+  vehicle.harley-davidson.low_rider               L= 2.350  W= 0.766  H= 1.649
+  vehicle.kawasaki.ninja                          L= 2.044  W= 0.797  H= 1.523
+  vehicle.vespa.zx125                             L= 1.817  W= 0.866  H= 1.590
+  vehicle.yamaha.yzf                              L= 2.191  W= 0.866  H= 1.530
+
+[base_type: truck]
+  vehicle.carlamotors.carlacola                   L= 5.204  W= 2.627  H= 2.467
+  vehicle.carlamotors.european_hgv                L= 7.936  W= 2.891  H= 3.462
+  vehicle.carlamotors.firetruck                   L= 8.468  W= 2.891  H= 3.827  special=emergency
+  vehicle.tesla.cybertruck                        L= 6.274  W= 2.390  H= 2.098  special=electric
+
+[base_type: unknown]
+  vehicle.bmw.grandtourer                         L= 4.611  W= 2.242  H= 1.667
+  vehicle.mini.cooper_s                           L= 3.806  W= 1.970  H= 1.475
+
+[base_type: van]
+  vehicle.ford.ambulance                          L= 6.366  W= 2.351  H= 2.431  special=emergency
+  vehicle.mercedes.sprinter                       L= 5.915  W= 1.988  H= 2.561
+  vehicle.volkswagen.t2                           L= 4.480  W= 2.069  H= 2.038
+  vehicle.volkswagen.t2_2021                      L= 4.442  W= 1.775  H= 1.987
+
+=== Walker (pedestrian) blueprints ===
+  walker.pedestrian.0001                          L= 0.345  W= 0.594  H= 1.836
+  walker.pedestrian.0002                          L= 0.354  W= 0.706  H= 1.836
+  walker.pedestrian.0003                          L= 0.354  W= 0.706  H= 1.836
+  walker.pedestrian.0004                          L= 0.354  W= 0.706  H= 1.836
+  walker.pedestrian.0005                          L= 0.345  W= 0.594  H= 1.836
+  walker.pedestrian.0006                          L= 0.345  W= 0.594  H= 1.836
+  walker.pedestrian.0007                          L= 0.345  W= 0.594  H= 1.836
+  walker.pedestrian.0008                          L= 0.345  W= 0.594  H= 1.836
+  walker.pedestrian.0009                          L= 0.255  W= 0.394  H= 1.110
+  walker.pedestrian.0010                          L= 0.255  W= 0.394  H= 1.110
+  walker.pedestrian.0011                          L= 0.255  W= 0.394  H= 1.110
+  walker.pedestrian.0012                          L= 0.270  W= 0.437  H= 1.263
+  walker.pedestrian.0013                          L= 0.270  W= 0.437  H= 1.263
+  walker.pedestrian.0014                          L= 0.270  W= 0.437  H= 1.263
+  walker.pedestrian.0015                          L= 0.328  W= 0.869  H= 1.805
+  walker.pedestrian.0016                          L= 0.376  W= 0.720  H= 1.854
+  walker.pedestrian.0017                          L= 0.402  W= 0.726  H= 1.842
+  walker.pedestrian.0018                          L= 0.370  W= 0.726  H= 1.835
+  walker.pedestrian.0019                          L= 0.328  W= 0.869  H= 1.805
+  walker.pedestrian.0020                          L= 0.331  W= 0.634  H= 1.846
+  walker.pedestrian.0021                          L= 0.331  W= 0.636  H= 1.846
+  walker.pedestrian.0022                          L= 0.353  W= 0.614  H= 1.847
+  walker.pedestrian.0023                          L= 0.353  W= 0.614  H= 1.847
+  walker.pedestrian.0024                          L= 0.431  W= 0.709  H= 1.840
+  walker.pedestrian.0025                          L= 0.431  W= 0.703  H= 1.840
+  walker.pedestrian.0026                          L= 0.370  W= 0.726  H= 1.835
+  walker.pedestrian.0027                          L= 0.423  W= 0.788  H= 1.949
+  walker.pedestrian.0028                          L= 0.423  W= 0.788  H= 1.949
+  walker.pedestrian.0029                          L= 0.423  W= 0.788  H= 1.949
+  walker.pedestrian.0030                          L= 0.452  W= 0.783  H= 1.937
+  walker.pedestrian.0031                          L= 0.402  W= 0.666  H= 1.930
+  walker.pedestrian.0032                          L= 0.396  W= 0.692  H= 1.930
+  walker.pedestrian.0033                          L= 0.395  W= 0.692  H= 1.930
+  walker.pedestrian.0034                          L= 0.634  W= 0.899  H= 1.844
+  walker.pedestrian.0035                          L= 0.659  W= 0.873  H= 1.952
+  walker.pedestrian.0036                          L= 0.659  W= 0.873  H= 1.952
+  walker.pedestrian.0037                          L= 0.659  W= 0.873  H= 1.952
+  walker.pedestrian.0038                          L= 0.634  W= 0.899  H= 1.844
+  walker.pedestrian.0039                          L= 0.563  W= 0.849  H= 1.883
+  walker.pedestrian.0040                          L= 0.396  W= 0.692  H= 1.930
+  walker.pedestrian.0041                          L= 0.396  W= 0.692  H= 1.930
+  walker.pedestrian.0042                          L= 0.874  W= 0.900  H= 1.855
+  walker.pedestrian.0043                          L= 0.874  W= 0.900  H= 1.855
+  walker.pedestrian.0044                          L= 0.874  W= 0.900  H= 1.855
+  walker.pedestrian.0045                          L= 0.540  W= 0.694  H= 1.848
+  walker.pedestrian.0046                          L= 0.540  W= 0.694  H= 1.848
+  walker.pedestrian.0047                          L= 0.540  W= 0.694  H= 1.848
+  walker.pedestrian.0048                          L= 0.299  W= 0.473  H= 1.160
+  walker.pedestrian.0049                          L= 0.343  W= 0.448  H= 1.192
+  walker.pedestrian.0050                          L= 0.307  W= 0.567  H= 1.286
+  walker.pedestrian.0051                          L= 0.329  W= 0.566  H= 1.267
+  walker.pedestrian.0052                          L= 0.544  W= 0.934  H= 1.931

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    SCENARIO 1: FREE FLOW TRAFFIC
+    Westbound: 21 -> 20 -> 19 -> 18  (spawn east, despawn west)
+    Eastbound: -5 -> -18 -> -19 -> -20 -> -21  (spawn west, despawn east)
+    Edge 20 / -20 is the monitored stretch (~52m).
+-->
+<routes>
+    <route id="WB_route" edges="-1 -2 21 20 19 18 5"/>
+    <route id="EB_route" edges="-5 -18 -19 -20 -21 2 1"/>
+
+    <flow id="WB_freeflow"
+          type="car"
+          route="WB_route"
+          begin="0" end="3600"
+          vehsPerHour="DENSITY_WB"
+          departLane="random"
+          departSpeed="0"
+          arrivalSpeed="current"/>
+
+    <flow id="EB_freeflow"
+          type="car"
+          route="EB_route"
+          begin="0" end="3600"
+          vehsPerHour="DENSITY_EB"
+          departLane="random"
+          departSpeed="0"
+          arrivalSpeed="current"/>
+</routes>

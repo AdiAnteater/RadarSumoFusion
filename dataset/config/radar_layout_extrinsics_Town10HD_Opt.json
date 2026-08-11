@@ -1,0 +1,357 @@
+{
+  "map": "Town10HD_Opt",
+  "frame": 1520627,
+  "note": "World frame; same logic as RadarCameraSetup4/8/12/14. Yaw is map-defined.",
+  "layouts": {
+    "4": [
+      {
+        "sensor_label": "R1",
+        "x_m": -33.825321,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -139.403244,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R2",
+        "x_m": -33.825321,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.596756,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R3",
+        "x_m": 3.355103,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.464203,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R4",
+        "x_m": 3.355103,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.060593,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      }
+    ],
+    "8": [
+      {
+        "sensor_label": "R1",
+        "x_m": -33.825321,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -139.403244,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R2",
+        "x_m": -33.825321,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.596756,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R3",
+        "x_m": 3.355103,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.464203,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R4",
+        "x_m": 3.355103,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 50.060589,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R5",
+        "x_m": 40.535526,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.976807,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R6",
+        "x_m": 40.535526,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.545761,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R7",
+        "x_m": 77.71595,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -32.394951,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R8",
+        "x_m": 77.71595,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 145.059509,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      }
+    ],
+    "12": [
+      {
+        "sensor_label": "R1",
+        "x_m": -33.825321,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": 130.596756,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R2",
+        "x_m": -33.825321,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.596756,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R3",
+        "x_m": -15.235109,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.403259,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R4",
+        "x_m": -15.235109,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 50.596737,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R5",
+        "x_m": 3.355103,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.464203,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R6",
+        "x_m": 3.355103,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 50.060589,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R7",
+        "x_m": 21.945314,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.976685,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R8",
+        "x_m": 21.945314,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.54509,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R9",
+        "x_m": 40.535526,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.976807,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R10",
+        "x_m": 40.535526,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.545761,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R11",
+        "x_m": 59.12574,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.976868,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R12",
+        "x_m": 59.12574,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.546371,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      }
+    ],
+    "14": [
+      {
+        "sensor_label": "R1",
+        "x_m": -33.825321,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -172.528137,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R2",
+        "x_m": -33.825321,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.596756,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R3",
+        "x_m": -15.235108,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.403259,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R4",
+        "x_m": -15.235108,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.596741,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R5",
+        "x_m": 3.355103,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.464203,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R6",
+        "x_m": 3.355103,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 50.060585,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R7",
+        "x_m": 21.945316,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.976715,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R8",
+        "x_m": 21.945316,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.545074,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R9",
+        "x_m": 40.535526,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.976807,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R10",
+        "x_m": 40.535526,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.545761,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R11",
+        "x_m": 59.12574,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -129.976868,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R12",
+        "x_m": 59.12574,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 130.546371,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R13",
+        "x_m": 77.71595,
+        "y_m": -52.015091,
+        "z_m": 1.0,
+        "yaw_deg": -112.394951,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      },
+      {
+        "sensor_label": "R14",
+        "x_m": 77.71595,
+        "y_m": -74.745476,
+        "z_m": 1.0,
+        "yaw_deg": 145.059509,
+        "pitch_deg": 0.0,
+        "roll_deg": 0.0
+      }
+    ]
+  }
+}

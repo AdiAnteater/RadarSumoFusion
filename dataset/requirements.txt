@@ -1,0 +1,6 @@
+# Dataset creation + radar labeling test reports (install into project .venv)
+#   pip install -r Scripts/DatasetCreation/requirements.txt
+
+matplotlib>=3.8.0
+numpy>=1.24.0
+pandas>=2.0.0

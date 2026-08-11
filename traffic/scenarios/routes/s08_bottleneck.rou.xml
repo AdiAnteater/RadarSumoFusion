@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    SCENARIO 8: BOTTLENECK / WORK ZONE
+    BottleneckController in runner.py parks lane_blocker_wb in the curb lane
+    (20_3) once it reaches the middle of edge 20, closing that lane.
+
+    departLane FIX: the blocker used departLane="1", a disallow="all" shoulder
+    lane, so it could never depart and the work zone never existed. Lane 3 is
+    the curb driving lane. departPos="10" now refers to edge -1 (130 m long),
+    which is the SE map-edge corner.
+-->
+<routes>
+    <route id="WB_route" edges="-1 -2 21 20 19 18 5"/>
+    <route id="EB_route" edges="-5 -18 -19 -20 -21 2 1"/>
+
+    <flow id="WB_flow"
+          type="car" route="WB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_WB"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+
+    <flow id="EB_flow"
+          type="car" route="EB_route"
+          begin="0" end="3600" vehsPerHour="DENSITY_EB"
+          departLane="random" departSpeed="0" arrivalSpeed="current"/>
+
+    <!-- Blocker: runner.py pins it to the curb lane on the way in, then holds
+         it stationary once it reaches mid-stretch on edge 20. -->
+    <vehicle id="lane_blocker_wb"
+             type="truck" route="WB_route"
+             depart="10" departLane="3" departPos="10"
+             departSpeed="0" color="1,0.5,0"/>
+</routes>

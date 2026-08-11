@@ -1,0 +1,13 @@
+run,DATASET_SEED,DATASET_TARGET_CAR_COUNT,DATASET_VEHICLE_SPEED_REDUCTION_PCT,DATASET_SAFE_FOLLOWING_DISTANCE_M,DATASET_VEHICLE_TRUCK_FRACTION,DATASET_PED_CROSSING_COUNT,DATASET_PED_CROSSING_FACTOR,DATASET_PED_RUNNING_FRACTION,DATASET_PED_SPAWN_RADIUS_M,DATASET_PED_CROSSING_X_MIN,DATASET_PED_CROSSING_X_MAX,DATASET_TRAFFIC_LIGHTS_GREEN_WAVE,capture_dir,minutes
+1,20261609,31,17.3,5.2,0.20,2,0.63,0.33,60,-0.5,29.5,1,/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_215112,16.4
+2,20261610,18,31.4,4.8,0.11,6,0.47,0.18,60,35.3,65.3,1,/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_220726,17.1
+3,20261611,33,8.0,4.3,0.18,3,0.31,0.08,60,-19.3,10.7,0,/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_222432,18.3
+4,20261612,13,43.7,3.4,0.09,0,0.75,0.01,60,-27.2,2.8,1,/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_224249,16.3
+5,20261613,22,27.7,2.0,0.06,5,0.27,0.11,60,6.3,36.3,0,/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_225905,17.3
+6,20261614,15,34.8,5.6,0.06,4,0.20,0.04,60,21.6,51.6,0,/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_231622,17.8
+7,20261615,29,18.9,2.5,0.14,3,0.68,0.39,60,-14.2,15.8,1,/scratch/tamoghnd/dataset_captures/sensor_capture_20260609_233408,27.1
+8,20261616,26,15.0,2.8,0.17,7,0.56,0.21,60,-8.5,21.5,0,/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_000116,28.0
+9,20261617,18,24.2,4.0,0.12,6,0.43,0.30,60,19.5,49.5,0,/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_002914,17.4
+10,20261618,27,2.0,5.7,0.15,8,0.53,0.33,60,27.8,57.8,0,/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_004640,15.4
+11,20261619,22,38.9,3.1,0.10,1,0.36,0.26,60,-6.1,23.9,1,/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_010207,16.9
+12,20261620,35,5.3,4.5,0.14,2,0.71,0.15,60,12.6,42.6,1,/scratch/tamoghnd/dataset_captures/sensor_capture_20260610_011903,16.1

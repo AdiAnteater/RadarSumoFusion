@@ -1,0 +1,6 @@
+Aligned radar points used in DatasetCreation.py
+
+R2: Transform(Location(x=-33.825321, y=-74.745476, z=1.000000), Rotation(pitch=0.000000, yaw=130.596756, roll=0.000000))
+R1: Transform(Location(x=-33.825321, y=-52.015091, z=1.000000), Rotation(pitch=0.000000, yaw=-139.403244, roll=0.000000))
+R4: Transform(Location(x=-15.235109, y=-74.745476, z=1.000000), Rotation(pitch=0.000000, yaw=50.596737, roll=0.000000))
+R3: Transform(Location(x=-15.235109, y=-52.015091, z=1.000000), Rotation(pitch=0.000000, yaw=-129.403259, roll=0.000000))
