@@ -45,6 +45,7 @@ class FusionConfig:
 
     # --- Orchestration knobs ---
     scene_cleanup: bool = True        # clear parked cars / trash before spawning
+    clear_trees: bool = True          # hide trees over the monitored stretch
     sync_timeout: float = 180.0       # runner wait for capture to enable sync
     sensor_settle_s: float = 5.0      # head-start for the sensor rig to spawn
     capture_start_gap_s: float = 2.0  # gap between capture up and runner up

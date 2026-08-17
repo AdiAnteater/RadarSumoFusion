@@ -148,6 +148,20 @@ def _scene_cleanup(cfg: FusionConfig, log) -> None:
             _say(log, f"[fusion] {name} skipped ({exc}).")
 
 
+def _clear_stretch_trees(cfg: FusionConfig, log) -> None:
+    """Hide trees over the monitored stretch (Vegetation only; traffic lights,
+    poles, and buildings untouched). Best-effort."""
+    script = DATASET_DIR / "world" / "ClearStretchTrees.py"
+    if not script.is_file():
+        return
+    _say(log, "[fusion] hiding trees over the monitored stretch ...")
+    try:
+        subprocess.run([sys.executable, str(script)], cwd=str(DATASET_DIR),
+                       env=_base_env(cfg), check=False, timeout=60)
+    except Exception as exc:  # noqa: BLE001
+        _say(log, f"[fusion] tree removal skipped ({exc}).")
+
+
 def _spawn_sensor_rig(cfg: FusionConfig, log) -> subprocess.Popen:
     script = DATASET_DIR / "setup" / cfg.setup_script_name()
     if not script.is_file():
@@ -262,6 +276,8 @@ def run(cfg: FusionConfig, log: list | None = None) -> FusionResult:
         _heal_async(cfg, lg, when="preflight")
         if cfg.scene_cleanup:
             _scene_cleanup(cfg, lg)
+        if cfg.clear_trees:
+            _clear_stretch_trees(cfg, lg)
 
         sensor_proc = _spawn_sensor_rig(cfg, lg)
         time.sleep(cfg.sensor_settle_s)

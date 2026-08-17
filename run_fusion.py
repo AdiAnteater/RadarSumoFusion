@@ -67,6 +67,8 @@ def main() -> int:
     # orchestration
     _bool_flag(p, "scene-cleanup", True,
                "clear parked cars/trash first", "skip scene cleanup")
+    _bool_flag(p, "clear-trees", True,
+               "hide trees over the monitored stretch", "keep trees")
     p.add_argument("--sync-timeout", type=float, default=180.0)
     args = p.parse_args()
 
@@ -80,7 +82,8 @@ def main() -> int:
         capture_base_dir=args.capture_base_dir,
         rate_hz=args.rate_hz, carla_host=args.carla_host, carla_port=args.carla_port,
         traffic_manager_port=args.tm_port,
-        scene_cleanup=args.scene_cleanup, sync_timeout=args.sync_timeout,
+        scene_cleanup=args.scene_cleanup, clear_trees=args.clear_trees,
+        sync_timeout=args.sync_timeout,
     )
     result = run(cfg)
     return 0 if result.ok else 1

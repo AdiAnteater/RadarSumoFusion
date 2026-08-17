@@ -59,6 +59,7 @@ THIS VERSION also carries three fixes from earlier debugging passes:
 """
 
 import math
+import os
 import time
 import traceback
 
@@ -182,6 +183,31 @@ USE_GROUND_PROJECTION = True
 # for several consecutive steps.
 GROUND_PROBE_GRID_M = 0.25
 
+# Vehicle ground-Z cache grid (m). Road elevation changes slowly, so resolving
+# the ground waypoint once per ~2 m cell (instead of an RPC per vehicle per
+# tick) is what lets the world tick at the target rate -- the choppy/laggy flow
+# and the shortened captures were the tick rate collapsing under one blocking
+# get_waypoint() call per mirrored vehicle every frame.
+GROUND_CACHE_GRID_M = 2.0
+
+# Pedestrians are snapped onto the nearest CARLA Sidewalk lane when one is within
+# this distance. SUMO's own pedestrian network does not line up exactly with the
+# rendered sidewalk meshes, so trusting SUMO's raw x/y left walkers in the road,
+# off the kerb, or clipped into buildings. Beyond this distance (e.g. mid-
+# crossing, where no sidewalk lane exists) we keep the computed position.
+# Env-tunable: raise DATASET_PED_SNAP_MAX_M to pull more walkers onto the kerb,
+# set it to 0 to disable snapping entirely (trust SUMO's raw placement).
+def _ped_snap_max_m():
+    raw = os.environ.get("DATASET_PED_SNAP_MAX_M", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+    return 6.0
+
+PED_SNAP_MAX_M = _ped_snap_max_m()
+
 # Centre of the CARLA render radius (monitored-stretch midpoint in CARLA
 # world coords) and default radius. SUMO simulates the WHOLE city so traffic
 # flows naturally into the stretch, but CARLA only renders actors within this
@@ -244,6 +270,8 @@ class CarlaSyncManager:
         self._far_wp_warned    = False
         self._ped_z_logged     = False
         self._ped_ground_cache = {}
+        self._veh_ground_cache = {}   # grid cell -> ground z (vehicle Z cache)
+        self._ped_snap_cache   = {}   # grid cell -> (x, y, z) snapped ped pose
         self._spawn_count   = 0
         self._destroy_count = 0
         # Tracks how many consecutive spawn attempts have failed for a
@@ -414,8 +442,25 @@ class CarlaSyncManager:
         try:
             for vid in visible - carla_ids:
                 self._spawn(vid)
+            # Move existing actors in ONE batched RPC instead of a blocking
+            # set_transform per vehicle -- fewer round-trips per tick keeps the
+            # world ticking near the target rate (smoother flow, correct capture
+            # length).
+            batch = []
             for vid in visible & carla_ids:
-                self._move(vid)
+                try:
+                    tr = self._sumo_transform(vid)
+                    loc = tr.location
+                    # Never push a non-finite transform: a NaN/inf pose applied
+                    # server-side can hard-crash CARLA. Skip it this step.
+                    if not (math.isfinite(loc.x) and math.isfinite(loc.y)
+                            and math.isfinite(loc.z)):
+                        continue
+                    batch.append(carla.command.ApplyTransform(self._actors[vid].id, tr))
+                except Exception as e:
+                    print(f"[CarlaSyncManager] Move build error for {vid}: {e}")
+            if batch:
+                self._client.apply_batch(batch)
             # Destroy actors that are gone from SUMO OR have left the radius.
             for vid in carla_ids - visible:
                 self._destroy(vid)
@@ -544,6 +589,14 @@ class CarlaSyncManager:
         nearest waypoint means our transform and CARLA's road graph disagree
         somewhere, which is worth knowing even though we no longer act on it.
         """
+        # Ground-Z cache: one get_waypoint() RPC per vehicle per tick was
+        # starving the world tick rate (choppy flow + shortened captures). Road
+        # elevation barely changes over ~2 m, so cache the ground z per grid cell.
+        cell = (round(x / GROUND_CACHE_GRID_M), round(y / GROUND_CACHE_GRID_M))
+        cached_z = self._veh_ground_cache.get(cell)
+        if cached_z is not None:
+            return x, y, cached_z + GROUND_CLEARANCE, None, True
+
         wp = self._map.get_waypoint(
             carla.Location(x=x, y=y, z=WAYPOINT_SEARCH_Z),
             project_to_road=True,
@@ -554,6 +607,7 @@ class CarlaSyncManager:
 
         loc = wp.transform.location
         dist = math.hypot(loc.x - x, loc.y - y)
+        self._veh_ground_cache[cell] = loc.z
 
         if dist > MAX_SNAP_DISTANCE and not self._far_wp_warned:
             self._far_wp_warned = True
@@ -771,17 +825,48 @@ class CarlaSyncManager:
         return z
 
     def _person_transform(self, pid: str) -> carla.Transform:
-        """Same offset/flip/yaw transform as vehicles. x/y are used exactly as
-        computed -- SUMO's lateral placement on the pavement is already correct
-        (measured: 0.0% of sidewalk pedestrian samples fall inside a drivable
-        lane) -- and only Z is resolved against the world."""
+        """SUMO's pedestrian network does not line up exactly with CARLA's
+        rendered sidewalk meshes, so trusting SUMO's raw x/y left walkers off the
+        kerb, out in the road, or clipped into buildings. We snap each walker onto
+        the nearest CARLA Sidewalk lane when one is close enough, then resolve the
+        ground height by raycast so they stand ON the pavement instead of buried
+        in it. Snap + ground results are grid-cached to keep the per-step cost off
+        the world tick."""
         x, y = traci.person.getPosition(pid)
         heading = traci.person.getAngle(pid)
         cx, cy, yaw = sumo_to_carla_xy_yaw(x, y, heading)
+        sx, sy = self._snap_to_sidewalk(cx, cy)
         return carla.Transform(
-            carla.Location(x=cx, y=cy, z=self._pedestrian_ground_z(cx, cy)),
+            carla.Location(x=sx, y=sy, z=self._pedestrian_ground_z(sx, sy)),
             carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0),
         )
+
+    def _snap_to_sidewalk(self, cx: float, cy: float):
+        """Pull (cx, cy) onto the nearest CARLA Sidewalk lane if one is within
+        PED_SNAP_MAX_M; otherwise return the point unchanged (e.g. a walker mid-
+        crossing, where no sidewalk lane exists). Grid-cached. Set PED_SNAP_MAX_M
+        to 0 to disable and trust SUMO's raw placement."""
+        if PED_SNAP_MAX_M <= 0:
+            return (cx, cy)
+        key = (round(cx / GROUND_PROBE_GRID_M), round(cy / GROUND_PROBE_GRID_M))
+        cached = self._ped_snap_cache.get(key)
+        if cached is not None:
+            return cached
+        result = (cx, cy)
+        try:
+            wp = self._map.get_waypoint(
+                carla.Location(x=cx, y=cy, z=WAYPOINT_SEARCH_Z),
+                project_to_road=True,
+                lane_type=carla.LaneType.Sidewalk,
+            )
+            if wp is not None:
+                loc = wp.transform.location
+                if math.hypot(loc.x - cx, loc.y - cy) <= PED_SNAP_MAX_M:
+                    result = (loc.x, loc.y)
+        except Exception:
+            pass
+        self._ped_snap_cache[key] = result
+        return result
 
     def _walker_blueprint(self, pid: str) -> carla.ActorBlueprint:
         walkers = self._blueprints.filter(WALKER_FILTER)

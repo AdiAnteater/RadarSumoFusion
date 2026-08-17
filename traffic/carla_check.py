@@ -105,10 +105,21 @@ def main():
         print("       server free-runs, and the runner mirrors into it.")
         print()
         if args.force_async:
+            # KICK the frozen world forward first. When a prior capture died in
+            # sync mode, the server is stuck waiting for a tick; a fresh scenario
+            # then connects onto a frozen world and its spawns never appear. Tick
+            # a few frames here to flush that pending state, THEN hand the clock
+            # back to asynchronous free-run.
+            for _ in range(5):
+                try:
+                    world.tick()
+                except RuntimeError:
+                    break
             settings.synchronous_mode = False
             settings.fixed_delta_seconds = None
             world.apply_settings(settings)
-            print("  FIXED: world set back to asynchronous mode.")
+            print("  FIXED: ticked the world forward and reset it to asynchronous "
+                  "mode.")
             print("  Re-run your scenario; vehicles should appear again.")
         else:
             print("  To reset it now:  python carla_check.py --async")
