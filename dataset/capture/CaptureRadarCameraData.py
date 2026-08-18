@@ -725,8 +725,9 @@ def radar_capture_fast_from_env() -> bool:
 
 def sync_mode_from_env() -> bool:
     """When True, the capture script becomes the world tick driver: it enables CARLA
-    synchronous mode and calls ``world.tick()`` on its own cadence so all 8 radars
-    fire on the exact same world frame. Default off (preserves async behavior)."""
+    synchronous mode and calls ``world.tick()`` on its own cadence so every
+    listening radar fires on the exact same world frame. Default off (preserves
+    async behavior)."""
     raw = os.environ.get("DATASET_SYNC_MODE", "0").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
@@ -1968,6 +1969,76 @@ def process_radar_measurement_fast(
         counts["radar_scored"] += len(rows)
 
 
+class RadarQueueConsumer:
+    """Write radar CSV off the thread that owns ``world.tick()``.
+
+    Capture is the CARLA clock owner. The live loop used to empty the whole
+    radar queue after every tick before calling ``world.tick()`` again. CSV
+    formatting for a full radar set easily exceeds ``fixed_delta_seconds``
+    (0.05 s at 20 Hz); that extra wall time delays the next tick, so SUMO
+    (``world.wait_for_tick()``) and every sensor slow together.
+
+    Listen callbacks stay O(1) enqueue. This thread is the sole live consumer.
+    A slow drain can still grow the bounded per-radar deque (and eventually
+    drop), but it no longer stretches the simulation clock.
+    """
+
+    def __init__(self, radar_queue, process_fn, *, batch_size: int = 8) -> None:
+        self._queue = radar_queue
+        self._process = process_fn
+        self._batch_size = max(1, int(batch_size))
+        self._stop = threading.Event()
+        self._write_errors = 0
+        self.processed = 0
+        self.last_batch_s = 0.0
+        self._thread = threading.Thread(
+            target=self._loop, name="radar-queue-consumer", daemon=True
+        )
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            # One tick's worth (one measurement per listening radar), not
+            # drain_all: keeps last_batch_s meaningful and yields the GIL
+            # between measurements so the tick owner can call world.tick()
+            # even when CSV formatting is slow.
+            batch = self._queue.drain(max_items=self._batch_size)
+            if not batch:
+                time.sleep(0.001)
+                continue
+            t0 = time.monotonic()
+            for item in batch:
+                try:
+                    self._process(item)
+                except Exception as exc:  # noqa: BLE001 - never kill the consumer
+                    self._write_errors += 1
+                    if self._write_errors <= 3:
+                        print(
+                            f"[capture] radar consumer: skipping a measurement "
+                            f"due to error: {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                self.processed += 1
+                time.sleep(0)
+                if self._stop.is_set():
+                    break
+            self.last_batch_s = time.monotonic() - t0
+
+    def stop(self, timeout_s: float = 30.0) -> None:
+        if self._stop.is_set():
+            return
+        self._stop.set()
+        self._thread.join(timeout=timeout_s)
+        if self._thread.is_alive():
+            print(
+                f"[capture] radar consumer still running after {timeout_s:.0f}s; "
+                "continuing shutdown drain on the main thread.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
 class CameraFrameWriter:
     """Offload camera PNG + FOV metadata off the CARLA listen thread.
 
@@ -2262,10 +2333,10 @@ def main():
 
     # ── Synchronous-mode setup ────────────────────────────────────────────
     # When DATASET_SYNC_MODE=1, the capture script takes ownership of the world
-    # clock and ticks at fixed_delta_seconds. This forces all 8 radars to fire
-    # on the same world tick (instead of each running its own staggered phase
-    # in async mode), enabling instantaneous multi-radar fusion on a single
-    # frame_id. Default off so legacy async captures still work unchanged.
+    # clock and ticks at fixed_delta_seconds. This forces every listening radar
+    # to fire on the same world tick (instead of each running its own staggered
+    # phase in async mode), enabling instantaneous multi-radar fusion on a
+    # single frame_id. Default off so legacy async captures still work unchanged.
     sync_mode = sync_mode_from_env()
     original_world_settings = world.get_settings()
     sync_traffic_manager = None
@@ -2407,6 +2478,19 @@ def main():
         counts=counts,
     )
 
+    # Live radar CSV must not run on the tick-owner thread. Shutdown still uses
+    # drain_radar_queue() on the main thread after this consumer is stopped.
+    radar_consumer = RadarQueueConsumer(
+        radar_queue,
+        process_measurement_item,
+        batch_size=max(1, len(radar_sensors)),
+    )
+    print(
+        "[capture] radar CSV consumer running off the tick thread "
+        "(queue drain no longer gates world.tick / SUMO).",
+        flush=True,
+    )
+
     # Per-sensor liveness tracking for the listen() watchdog. Each entry holds
     # (radar_actor, sensor_label, callback, last_world_frame). Integer reads/writes
     # are GIL-atomic in CPython, so we don't need a lock here — the watchdog only
@@ -2526,12 +2610,20 @@ def main():
             print("Press Enter to stop recording.")
 
         last_print = time.time()
+        last_tick_at = None
+        tick_rpc_s = 0.0
+        tick_period_s = 0.0
         while True:
             # In sync mode the capture script owns the world clock: each
             # iteration ticks the world once, which causes the server to run
             # exactly fixed_delta_seconds of simulation and dispatch every
-            # sensor that's due. All 8 radars fire on the resulting frame_id.
+            # sensor that's due. Every listening radar fires on that frame_id.
+            # Do NOT drain the radar queue here. CSV write is on
+            # RadarQueueConsumer; emptying the queue on this thread used to
+            # delay the next tick whenever drain exceeded 0.05 s, which
+            # slowed SUMO and every sensor in lockstep.
             if sync_mode:
+                t0 = time.monotonic()
                 try:
                     world.tick()
                 except RuntimeError as exc:
@@ -2540,11 +2632,10 @@ def main():
                         file=sys.stderr,
                         flush=True,
                     )
-
-            drained_any = False
-            while radar_queue.pending():
-                drain_radar_queue()
-                drained_any = True
+                tick_rpc_s = time.monotonic() - t0
+                if last_tick_at is not None:
+                    tick_period_s = t0 - last_tick_at
+                last_tick_at = t0
             radar_watchdog_check()
             if enter_pressed():
                 break
@@ -2572,6 +2663,13 @@ def main():
                         f"fast={int(capture_fast)} "
                         f"sync={int(sync_mode)} "
                         + (
+                            f"tick_ms={1000 * tick_rpc_s:.1f} "
+                            f"period_ms={1000 * tick_period_s:.1f} "
+                            f"drain_ms={1000 * radar_consumer.last_batch_s:.1f} "
+                            if sync_mode
+                            else f"drain_ms={1000 * radar_consumer.last_batch_s:.1f} "
+                        )
+                        + (
                             f"radar_scored={counts['radar_scored']} "
                             f"radar_matched={counts['radar_matched']} "
                             f"label_rate={100 * rate_c:.1f}% ({snap.get('matched_detections', 0)}/{wc} w/ cand) "
@@ -2584,11 +2682,11 @@ def main():
                     )
                 last_print = now
 
-            # In async mode, yield to the OS when the queue is empty so we
-            # don't busy-spin while waiting for the next radar callback.
-            # In sync mode the loop is naturally rate-limited by world.tick(),
-            # which blocks until the server reports the frame complete.
-            if not sync_mode and not drained_any:
+            # In async mode, yield to the OS so we don't busy-spin while the
+            # radar consumer and listen callbacks run. In sync mode the loop
+            # is rate-limited by world.tick(), which blocks until the server
+            # reports the frame complete.
+            if not sync_mode:
                 time.sleep(0.005)
 
     finally:
@@ -2625,11 +2723,20 @@ def main():
                         file=sys.stderr,
                         flush=True,
                     )
-        # Drain the radar queue using the in-memory per-frame actor cache populated
-        # by TickActorSnapshotter (no CARLA RPCs needed). Actor frames captured by
-        # the on_tick callback before Ctrl+C are already available for every
-        # queued radar message, so the drain finishes in seconds and every frame
-        # in radar_data.csv keeps a matching actor record.
+        # Stop the live consumer first so shutdown drain is single-threaded, then
+        # finish the radar queue using the in-memory per-frame actor cache
+        # populated by TickActorSnapshotter (no CARLA RPCs needed). Actor frames
+        # captured by the on_tick callback before Ctrl+C are already available
+        # for every queued radar message, so the drain finishes in seconds and
+        # every frame in radar_data.csv keeps a matching actor record.
+        try:
+            radar_consumer.stop()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[capture] radar_consumer.stop failed: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         drain_radar_queue(budget_s=30.0)
         print(
             f"[capture] actor frames captured by tick callback: "
