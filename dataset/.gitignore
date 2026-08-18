@@ -7,3 +7,6 @@ Data/
 
 # Local working notes / generated summaries — not part of the codebase.
 claude_summary.md
+
+# Python bytecode cache from capture scripts.
+capture/__pycache__/
