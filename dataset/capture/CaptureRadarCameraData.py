@@ -13,6 +13,7 @@ import datetime
 import json
 import math
 import os
+import queue
 import signal
 import subprocess
 import sys
@@ -1967,6 +1968,180 @@ def process_radar_measurement_fast(
         counts["radar_scored"] += len(rows)
 
 
+class CameraFrameWriter:
+    """Offload camera PNG + FOV metadata off the CARLA listen thread.
+
+    The listen callback must stay O(1). ``get_radar_target_snapshots()`` is one
+    RPC per actor, and ``save_to_disk()`` encodes a PNG — either one on the
+    sensor thread stalls the stream the same way the old per-actor ``on_tick``
+    RPC storm did (capture 231410). Hold the ``carla.Image`` (it owns the
+    pixel buffer) on a queue; this thread does FOV lookup from the already-
+    cached tick snapshots and the disk write.
+    """
+
+    def __init__(
+        self,
+        snapshotter: TickActorSnapshotter,
+        camera_csv_writer,
+        camera_file,
+        lock: threading.Lock,
+        counts: dict,
+    ) -> None:
+        self._snapshotter = snapshotter
+        self._csv_writer = camera_csv_writer
+        self._camera_file = camera_file
+        self._lock = lock
+        self._counts = counts
+        self._queue: "queue.Queue" = queue.Queue()
+        self._closed = False
+        self.dropped = 0
+        self.enqueued = 0
+        self._write_errors = 0
+        self._thread = threading.Thread(
+            target=self._loop, name="camera-frame-writer", daemon=True
+        )
+        self._thread.start()
+
+    def enqueue(self, image, sid, slabel, folder, sensor_hfov) -> bool:
+        if self._closed:
+            self.dropped += 1
+            return False
+        self._queue.put((image, sid, slabel, folder, sensor_hfov))
+        self.enqueued += 1
+        return True
+
+    def pending(self) -> int:
+        return self._queue.qsize()
+
+    def _actors_for_frame(self, frame_id: int) -> list:
+        if self._snapshotter.has(frame_id):
+            return self._snapshotter.get(frame_id)
+        # Camera stream can beat world.on_tick by a few ms. Wait up to one
+        # 20 Hz tick on THIS thread only — never on the listen callback.
+        deadline = time.monotonic() + 0.05
+        while time.monotonic() < deadline:
+            if self._snapshotter.has(frame_id):
+                return self._snapshotter.get(frame_id)
+            time.sleep(0.001)
+        return self._snapshotter.get(frame_id)
+
+    def _loop(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:
+                    return
+                self._process(*item)
+            except Exception as exc:  # noqa: BLE001 - never kill the writer
+                self._write_errors += 1
+                if self._write_errors <= 3:
+                    print(
+                        f"[capture] camera writer error: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            finally:
+                self._queue.task_done()
+
+    def _process(self, image, sid, slabel, folder, sensor_hfov) -> None:
+        actors = self._actors_for_frame(int(image.frame))
+        nearby_actors = get_nearby_actors_in_fov(
+            image.transform,
+            actors,
+            NEARBY_DISTANCE_M,
+            sensor_hfov,
+        )
+        if not nearby_actors:
+            return
+
+        nearest = nearby_actors[0]
+        nearby_ids = ";".join(str(a["id"]) for a in nearby_actors)
+        nearby_kinds = ";".join(a["kind"] for a in nearby_actors)
+        nearby_classes = ";".join(a["class_label"] for a in nearby_actors)
+
+        nearby_vehicles = [a for a in nearby_actors if a["kind"] == "vehicle"]
+        nearby_peds = [a for a in nearby_actors if a["kind"] == "pedestrian"]
+        nearest_vehicle = nearby_vehicles[0] if nearby_vehicles else None
+        nearest_ped = nearby_peds[0] if nearby_peds else None
+
+        def _actor_fields(actor):
+            if actor is None:
+                return ("", "", "", "")
+            return (
+                actor["id"],
+                actor["type_id"],
+                actor["class_label"],
+                f"{actor['distance']:.6f}",
+            )
+
+        nv_id, nv_type, nv_class, nv_dist = _actor_fields(nearest_vehicle)
+        np_id, np_type, np_class, np_dist = _actor_fields(nearest_ped)
+        veh_ids = ";".join(str(v["id"]) for v in nearby_vehicles)
+        veh_classes = ";".join(v["class_label"] for v in nearby_vehicles)
+        ped_ids = ";".join(str(p["id"]) for p in nearby_peds)
+        ped_classes = ";".join(p["class_label"] for p in nearby_peds)
+
+        image_name = f"frame_{image.frame:08d}.png"
+        image_path = os.path.join(folder, image_name)
+        image.save_to_disk(image_path)
+
+        with self._lock:
+            if self._camera_file.closed:
+                return
+            self._csv_writer.writerow(
+                [
+                    sid,
+                    slabel,
+                    image.frame,
+                    f"{image.timestamp:.6f}",
+                    image.width,
+                    image.height,
+                    image_path,
+                    nearest["id"],
+                    nearest["kind"],
+                    nearest["type_id"],
+                    nearest["class_label"],
+                    f"{nearest['distance']:.6f}",
+                    nearby_ids,
+                    nearby_kinds,
+                    nearby_classes,
+                    nv_id,
+                    nv_type,
+                    nv_class,
+                    nv_dist,
+                    veh_ids,
+                    veh_classes,
+                    np_id,
+                    np_type,
+                    np_class,
+                    np_dist,
+                    ped_ids,
+                    ped_classes,
+                ]
+            )
+            self._counts["camera_frames"] += 1
+
+    def close(self, timeout_s: float = 60.0) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        pending = self._queue.qsize()
+        if pending:
+            print(
+                f"[capture] draining {pending} queued camera frame(s) ...",
+                flush=True,
+            )
+        self._queue.put(None)
+        self._thread.join(timeout=timeout_s)
+        if self._thread.is_alive():
+            print(
+                f"[capture] camera writer still running after {timeout_s:.0f}s; "
+                "continuing shutdown.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
 def _install_stop_signal_handlers():
     """Force SIGINT and SIGTERM to raise KeyboardInterrupt so this capture always
     stops gracefully (drain → extrinsics → offline labeling in main()'s finally).
@@ -2070,6 +2245,10 @@ def main():
             for c in camera_sensors
         ]
         print(f"Tagged cameras (label:actor_id): {', '.join(camera_summary)}")
+        print(
+            "Camera capture: listen callback enqueues only "
+            "(PNG + FOV CSV on writer thread; no per-actor RPCs)."
+        )
 
     capture_fast = radar_capture_fast_from_env()
     if capture_fast:
@@ -2153,6 +2332,13 @@ def main():
         snapshot_fn=make_fast_tick_snapshot_fn(world),
     )
     radar_queue = make_radar_capture_buffer()
+    camera_frame_writer = CameraFrameWriter(
+        tick_snapshotter,
+        camera_writer,
+        camera_file,
+        lock,
+        counts,
+    )
 
     def process_measurement_item(item) -> None:
         if capture_fast:
@@ -2320,85 +2506,11 @@ def main():
                 folder=sensor_folder,
                 sensor_hfov=camera_hfov,
             ):
-                sensor_transform = image.transform
-                actors = get_radar_target_snapshots(world)
-                nearby_actors = get_nearby_actors_in_fov(
-                    sensor_transform,
-                    actors,
-                    NEARBY_DISTANCE_M,
-                    sensor_hfov,
+                # Keep this O(1): the Image object owns the pixel buffer for as
+                # long as we hold it. FOV + PNG happen on camera_frame_writer.
+                camera_frame_writer.enqueue(
+                    image, sid, slabel, folder, sensor_hfov
                 )
-                if not nearby_actors:
-                    return
-
-                nearest = nearby_actors[0]
-                nearby_ids = ";".join(str(a["id"]) for a in nearby_actors)
-                nearby_kinds = ";".join(a["kind"] for a in nearby_actors)
-                nearby_classes = ";".join(a["class_label"] for a in nearby_actors)
-
-                nearby_vehicles = [a for a in nearby_actors if a["kind"] == "vehicle"]
-                nearby_peds = [a for a in nearby_actors if a["kind"] == "pedestrian"]
-                nearest_vehicle = nearby_vehicles[0] if nearby_vehicles else None
-                nearest_ped = nearby_peds[0] if nearby_peds else None
-
-                def _actor_fields(actor):
-                    if actor is None:
-                        return ("", "", "", "")
-                    return (
-                        actor["id"],
-                        actor["type_id"],
-                        actor["class_label"],
-                        f"{actor['distance']:.6f}",
-                    )
-
-                nv_id, nv_type, nv_class, nv_dist = _actor_fields(nearest_vehicle)
-                np_id, np_type, np_class, np_dist = _actor_fields(nearest_ped)
-                veh_ids = ";".join(str(v["id"]) for v in nearby_vehicles)
-                veh_classes = ";".join(v["class_label"] for v in nearby_vehicles)
-                ped_ids = ";".join(str(p["id"]) for p in nearby_peds)
-                ped_classes = ";".join(p["class_label"] for p in nearby_peds)
-
-                image_name = f"frame_{image.frame:08d}.png"
-                image_path = os.path.join(folder, image_name)
-                image.save_to_disk(image_path)
-
-                with lock:
-                    # Guard against the one-frame race where CARLA delivers a
-                    # final callback after sensor.stop() + camera_file.close().
-                    if camera_file.closed:
-                        return
-                    camera_writer.writerow(
-                        [
-                            sid,
-                            slabel,
-                            image.frame,
-                            f"{image.timestamp:.6f}",
-                            image.width,
-                            image.height,
-                            image_path,
-                            nearest["id"],
-                            nearest["kind"],
-                            nearest["type_id"],
-                            nearest["class_label"],
-                            f"{nearest['distance']:.6f}",
-                            nearby_ids,
-                            nearby_kinds,
-                            nearby_classes,
-                            nv_id,
-                            nv_type,
-                            nv_class,
-                            nv_dist,
-                            veh_ids,
-                            veh_classes,
-                            np_id,
-                            np_type,
-                            np_class,
-                            np_dist,
-                            ped_ids,
-                            ped_classes,
-                        ]
-                    )
-                    counts["camera_frames"] += 1
 
             camera.listen(camera_callback)
 
@@ -2466,7 +2578,9 @@ def main():
                             if not capture_fast
                             else f"pts/msg={counts['radar_detections'] / max(counts['radar_messages'], 1):.1f} "
                         )
-                        + f"camera_frames={counts['camera_frames']}"
+                        + f"camera_frames={counts['camera_frames']} "
+                        f"cam_q={camera_frame_writer.pending()} "
+                        f"cam_dropped={camera_frame_writer.dropped}"
                     )
                 last_print = now
 
@@ -2522,6 +2636,22 @@ def main():
             f"{tick_snapshotter.tick_count()}",
             flush=True,
         )
+        # Stop cameras before draining PNGs so the writer queue is finite, and
+        # keep TickActorSnapshotter alive until that drain finishes (FOV metadata
+        # is a cache lookup, not a CARLA RPC).
+        for camera in camera_sensors:
+            try:
+                camera.stop()
+            except RuntimeError:
+                pass
+        try:
+            camera_frame_writer.close()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[capture] camera_frame_writer.close failed: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         print("[capture] closing actor_frames.jsonl...", flush=True)
         try:
             tick_snapshotter.stop()

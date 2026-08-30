@@ -301,6 +301,11 @@ class TickActorSnapshotter:
         with self._lock:
             return self._by_frame.get(int(frame_id), [])
 
+    def has(self, frame_id: int) -> bool:
+        """True if this frame was captured (even when the actor list is empty)."""
+        with self._lock:
+            return int(frame_id) in self._by_frame
+
     def tick_count(self) -> int:
         return self._tick_count
 
