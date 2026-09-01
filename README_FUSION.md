@@ -130,9 +130,10 @@ after capture. Disable with `--no-label` / `--no-postprocess`.
   tick-subscriber upgrades in `runner.py` and `carla_sync.py` (external-tick
   pacing, rate alignment, standalone wall-clock pacing, sync-heal). The
   capture/sensor code in `dataset/` is unchanged.
-- `dataset/dataset_paths.venv_site_packages()` looks for a `.venv` two levels
-  above `dataset/`. If your venv lives elsewhere, just run with it activated -
-  children inherit it via the interpreter; the lookup is only a convenience.
+- `dataset/dataset_paths.venv_site_packages()` walks up from `dataset/` until it
+  finds a `.venv` (Windows `Lib/site-packages` or Linux `lib/python*/site-packages`).
+  If your venv lives elsewhere, run with it activated — children inherit it via
+  the interpreter; the lookup is only a convenience.
 - Validated with `py_compile` across the whole tree; NOT run against a live CARLA
   server here. Do a short visual check in CARLA before recording a full campaign.
 - Two processes means a constant one-frame (one tick) offset between SUMO state

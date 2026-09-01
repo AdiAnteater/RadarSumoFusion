@@ -761,6 +761,19 @@ def radar_watchdog_stale_ticks_from_env() -> int:
         return 60
 
 
+def camera_watchdog_stale_ticks_from_env() -> int:
+    """Same listen() watchdog for RGB cameras. Defaults to the radar knob
+    (``DATASET_RADAR_WATCHDOG_STALE_TICKS``) so one env var covers both.
+    Override cameras alone with ``DATASET_CAMERA_WATCHDOG_STALE_TICKS``."""
+    raw = os.environ.get("DATASET_CAMERA_WATCHDOG_STALE_TICKS", "").strip()
+    if not raw:
+        return radar_watchdog_stale_ticks_from_env()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return radar_watchdog_stale_ticks_from_env()
+
+
 def traffic_manager_port_from_env() -> int:
     """TM port to align with the world's sync mode. Defaults to CARLA's standard
     port; override via ``DATASET_TRAFFIC_MANAGER_PORT`` if your spawner uses
@@ -2492,13 +2505,17 @@ def main():
     )
 
     # Per-sensor liveness tracking for the listen() watchdog. Each entry holds
-    # (radar_actor, sensor_label, callback, last_world_frame). Integer reads/writes
+    # (actor, sensor_label, callback, last_world_frame). Integer reads/writes
     # are GIL-atomic in CPython, so we don't need a lock here — the watchdog only
-    # cares about relative staleness vs the latest-seen frame across all radars.
+    # cares about relative staleness vs the latest-seen frame (or world.tick()).
     radar_watchdog_stale_ticks = radar_watchdog_stale_ticks_from_env()
+    camera_watchdog_stale_ticks = camera_watchdog_stale_ticks_from_env()
     radar_track: dict[int, dict] = {}
+    camera_track: dict[int, dict] = {}
     radar_latest_frame: list[int] = [0]
+    camera_latest_frame: list[int] = [0]
     radar_watchdog_resets: list[int] = [0]
+    camera_watchdog_resets: list[int] = [0]
 
     try:
         for radar in radar_sensors:
@@ -2533,38 +2550,39 @@ def main():
             }
             radar.listen(radar_callback)
 
-        def radar_watchdog_check() -> None:
-            """Re-attach listen() on any radar that's fallen behind its peers."""
-            if radar_watchdog_stale_ticks <= 0:
+        def _watchdog_check(
+            track: dict,
+            stale_ticks: int,
+            latest: int,
+            resets: list,
+        ) -> None:
+            """Re-attach listen() on any sensor that's fallen behind the baseline."""
+            if stale_ticks <= 0 or latest <= 0:
                 return
-            latest = radar_latest_frame[0]
-            if latest <= 0:
-                return
-            for sid, entry in radar_track.items():
+            for sid, entry in track.items():
                 last = entry["last_frame"]
                 if last == 0:
-                    # Sensor hasn't produced anything yet — don't reset until at
-                    # least one peer has fired enough to establish a baseline.
-                    if latest < radar_watchdog_stale_ticks:
+                    # Sensor hasn't produced anything yet — don't reset until the
+                    # baseline has advanced enough to establish that others are live.
+                    if latest < stale_ticks:
                         continue
-                if latest - last <= radar_watchdog_stale_ticks:
+                if latest - last <= stale_ticks:
                     continue
                 actor = entry["actor"]
                 try:
                     if actor.is_listening:
                         actor.stop()
                     actor.listen(entry["callback"])
-                    radar_watchdog_resets[0] += 1
+                    resets[0] += 1
                     print(
                         f"[capture] watchdog: re-attached listen() on "
                         f"{entry['label']} (sid={sid}) — was {latest - last} "
-                        f"ticks behind peers (latest={latest}, last={last}).",
+                        f"ticks behind (latest={latest}, last={last}).",
                         file=sys.stderr,
                         flush=True,
                     )
                     # Seed last_frame to the current latest so we don't immediately
-                    # re-trigger the watchdog if the sensor takes a few ticks to
-                    # produce its first post-reset measurement.
+                    # re-trigger if the sensor takes a few ticks to fire again.
                     entry["last_frame"] = latest
                 except Exception as exc:  # noqa: BLE001 - best-effort recovery
                     print(
@@ -2573,6 +2591,22 @@ def main():
                         file=sys.stderr,
                         flush=True,
                     )
+
+        def radar_watchdog_check(tick_frame: int | None = None) -> None:
+            latest = radar_latest_frame[0] if tick_frame is None else tick_frame
+            _watchdog_check(
+                radar_track, radar_watchdog_stale_ticks, latest, radar_watchdog_resets
+            )
+
+        def camera_watchdog_check(tick_frame: int | None = None) -> None:
+            latest = (
+                tick_frame
+                if tick_frame is not None
+                else max(camera_latest_frame[0], radar_latest_frame[0])
+            )
+            _watchdog_check(
+                camera_track, camera_watchdog_stale_ticks, latest, camera_watchdog_resets
+            )
 
         for camera in camera_sensors:
             sensor_id = camera.id
@@ -2592,10 +2626,22 @@ def main():
             ):
                 # Keep this O(1): the Image object owns the pixel buffer for as
                 # long as we hold it. FOV + PNG happen on camera_frame_writer.
+                frame_id = int(image.frame)
+                entry = camera_track.get(sid)
+                if entry is not None:
+                    entry["last_frame"] = frame_id
+                if frame_id > camera_latest_frame[0]:
+                    camera_latest_frame[0] = frame_id
                 camera_frame_writer.enqueue(
                     image, sid, slabel, folder, sensor_hfov
                 )
 
+            camera_track[sensor_id] = {
+                "actor": camera,
+                "label": sensor_label,
+                "callback": camera_callback,
+                "last_frame": 0,
+            }
             camera.listen(camera_callback)
 
         print("Listening to sensors...")
@@ -2622,10 +2668,11 @@ def main():
             # RadarQueueConsumer; emptying the queue on this thread used to
             # delay the next tick whenever drain exceeded 0.05 s, which
             # slowed SUMO and every sensor in lockstep.
+            tick_frame = None
             if sync_mode:
                 t0 = time.monotonic()
                 try:
-                    world.tick()
+                    tick_frame = int(world.tick())
                 except RuntimeError as exc:
                     print(
                         f"[capture] world.tick failed: {exc}",
@@ -2636,7 +2683,8 @@ def main():
                 if last_tick_at is not None:
                     tick_period_s = t0 - last_tick_at
                 last_tick_at = t0
-            radar_watchdog_check()
+            radar_watchdog_check(tick_frame)
+            camera_watchdog_check(tick_frame)
             if enter_pressed():
                 break
             if capture_deadline is not None and time.monotonic() >= capture_deadline:
@@ -2660,6 +2708,7 @@ def main():
                         f"dropped={radar_queue.dropped} "
                         f"actor_ticks={tick_snapshotter.tick_count()} "
                         f"watchdog_resets={radar_watchdog_resets[0]} "
+                        f"cam_watchdog_resets={camera_watchdog_resets[0]} "
                         f"fast={int(capture_fast)} "
                         f"sync={int(sync_mode)} "
                         + (
