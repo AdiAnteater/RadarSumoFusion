@@ -60,11 +60,34 @@ def ensure_import_paths(*_extra: str, root: Path | None = None) -> Path:
     return root
 
 
+def _site_packages_under(venv: Path) -> Path | None:
+    """Return site-packages inside a venv, or None if that venv is missing."""
+    win = venv / "Lib" / "site-packages"
+    if win.is_dir():
+        return win
+    lib = venv / "lib"
+    if not lib.is_dir():
+        return None
+    for child in lib.iterdir():
+        if child.name.startswith("python"):
+            sp = child / "site-packages"
+            if sp.is_dir():
+                return sp
+    return None
+
+
 def venv_site_packages(root: Path | None = None) -> Path | None:
-    """Project .venv site-packages (CARLA is usually installed here)."""
-    project_root = (root or dataset_root()).parents[1]
-    sp = project_root / ".venv" / "Lib" / "site-packages"
-    return sp if sp.is_dir() else None
+    """Walk up from the dataset root until a project ``.venv`` is found.
+
+    Nested layouts (``RadarSumoFusion/dataset/``) used to miss
+    ``CARLA_Latest/.venv`` because the lookup was a hard ``parents[1]``.
+    """
+    start = (root or dataset_root()).resolve()
+    for directory in (start, *start.parents):
+        found = _site_packages_under(directory / ".venv")
+        if found is not None:
+            return found
+    return None
 
 
 def pythonpath_env(root: Path | None = None) -> str:
