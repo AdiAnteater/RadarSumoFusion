@@ -143,14 +143,19 @@ def stretch_radar_positions(count, height=None):
 
 
 # Horizontal slew off the inward (toward-road) vector. Both rows keep the
-# candidate closer to DATASET_RIG_HEADING_DEG so they look down-stretch
-# together (east on the default boulevard) instead of flipping with whichever
-# carriageway get_waypoint() snaps to.
+# candidate closer to DATASET_RADAR_LOOK_HEADING_DEG (falls back to
+# DATASET_RIG_HEADING_DEG) so they look down-stretch together. Override look
+# heading to flip facing without moving the rows (180 = west on this boulevard).
 RADAR_YAW_OFFSET_DEG = 40.0
 
 
 def radar_yaw_offset_deg_from_env():
     return max(0.0, min(_env_float("DATASET_RADAR_YAW_OFFSET_DEG", RADAR_YAW_OFFSET_DEG), 80.0))
+
+
+def radar_look_heading_deg_from_env():
+    """Along-road direction every radar slews toward. Does not move the rig."""
+    return _env_float("DATASET_RADAR_LOOK_HEADING_DEG", rig_heading_deg_from_env())
 
 
 def _normalize_angle_deg(angle_deg):
@@ -188,18 +193,18 @@ def _yaw_toward_road_deg(location, current_map):
 
 
 def stretch_radar_yaw(location, current_map=None, offset_deg=None):
-    """Look at the road, then slew ±offset along DATASET_RIG_HEADING_DEG.
+    """Look at the road, then slew ±offset along DATASET_RADAR_LOOK_HEADING_DEG.
 
-    On the default east-west boulevard this yields ~+50° (south row, look N+E)
-    and ~-50° (north row, look S+E). Negative world XY does not add 90°.
+    Default look heading 0 on this boulevard: south ~+50° (N+E), north ~-50° (S+E).
+    Look heading 180: south ~+130° (N+W), north ~-130° (S+W). Rows stay put.
     """
     if offset_deg is None:
         offset_deg = radar_yaw_offset_deg_from_env()
     yaw_to_road = _yaw_toward_road_deg(location, current_map)
     plus = yaw_to_road + offset_deg
     minus = yaw_to_road - offset_deg
-    heading = rig_heading_deg_from_env()
-    chosen = min((plus, minus), key=lambda c: _angular_distance_deg(c, heading))
+    look = radar_look_heading_deg_from_env()
+    chosen = min((plus, minus), key=lambda c: _angular_distance_deg(c, look))
     return _normalize_angle_deg(chosen)
 
 
@@ -220,10 +225,11 @@ def radar_yaw_summary(radar_positions):
             return int(name.lstrip("R"))
         except ValueError:
             return name
-    return ", ".join(
+    yaws = ", ".join(
         f"{n}={radar_positions[n].rotation.yaw:.1f}°"
         for n in sorted(radar_positions, key=_key)
     )
+    return f"look={radar_look_heading_deg_from_env():.1f}° | {yaws}"
 
 
 def stretch_camera_transform(height=None):

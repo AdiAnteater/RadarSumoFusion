@@ -235,7 +235,7 @@ def main():
     # ~5 m from the nearest driving lane (was ~11 m — weak returns at shallow grazing angle).
     rh = radar_height_m_from_env()   # mounting height (m); DATASET_RIG_HEIGHT_M (default 3.0)
     # Radars straddle the monitored stretch (SUMO edges 20/-20). XY from the
-    # shared helper; yaw looks inward then slews along DATASET_RIG_HEADING_DEG.
+    # shared helper; yaw looks inward then slews along DATASET_RADAR_LOOK_HEADING_DEG.
     radar_positions = stretch_radar_positions(8, height=rh)
     apply_stretch_radar_yaws(radar_positions, current_map)
     apply_radar_pitch(radar_positions)
