@@ -24,8 +24,9 @@ from capture.CaptureRadarCameraData import (
 )
 from dataset_paths import config_dir
 from capture.radar_layout import (
+    apply_stretch_radar_yaws,
+    radar_yaw_summary,
     stretch_radar_positions,
-    stretch_north_row_names,
     stretch_camera_transform,
 )
 
@@ -50,39 +51,6 @@ def make_transform(x, y, z, pitch, yaw, roll):
 
 def normalize_angle(angle_deg):
     return (angle_deg + 180.0) % 360.0 - 180.0
-
-
-def angular_distance(a_deg, b_deg):
-    return abs(normalize_angle(a_deg - b_deg))
-
-
-def compute_radar_yaw_toward_road(
-    current_map, location, fallback_yaw, offset_deg=40.0, use_opposite_side=False
-):
-    road_wp = current_map.get_waypoint(
-        location, project_to_road=True, lane_type=carla.LaneType.Driving
-    )
-    if road_wp is None:
-        return fallback_yaw
-
-    road_loc = road_wp.transform.location
-    dx = road_loc.x - location.x
-    dy = road_loc.y - location.y
-
-    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-        yaw_to_road = road_wp.transform.rotation.yaw
-    else:
-        yaw_to_road = math.degrees(math.atan2(dy, dx))
-
-    candidates = [yaw_to_road + offset_deg, yaw_to_road - offset_deg]
-    lane_yaws = [road_wp.transform.rotation.yaw, road_wp.transform.rotation.yaw + 180.0]
-
-    chosen = min(candidates, key=lambda c: min(angular_distance(c, ly) for ly in lane_yaws))
-
-    if use_opposite_side:
-        chosen = candidates[1] if abs(normalize_angle(chosen - candidates[0])) < 1e-6 else candidates[0]
-
-    return normalize_angle(chosen)
 
 
 def radar_debug_color_for_name(name, num_radars=4):
@@ -213,35 +181,9 @@ def main():
     # Radars straddle the monitored stretch (SUMO edges 20/-20); env-tunable.
     # Coordinates from the shared helper in capture/radar_layout.py.
     radar_positions = stretch_radar_positions(4, height=13.0)
-
-    # East column (R3/R4): flip R4 to the opposite ±40° side like upper-row flips in Setup8.
-    flipped_40_deg_names = stretch_north_row_names(4)
-
-    # Apply smart yaw
-    for name in radar_positions:
-        tr = radar_positions[name]
-        new_yaw = compute_radar_yaw_toward_road(
-            current_map,
-            tr.location,
-            tr.rotation.yaw,
-            offset_deg=40.0,
-            use_opposite_side=name in flipped_40_deg_names,
-        )
-        radar_positions[name] = carla.Transform(
-            tr.location,
-            carla.Rotation(tr.rotation.pitch, new_yaw, tr.rotation.roll),
-        )
-
-    # Same first-column fix as RadarCameraSetup8 / 12: R1/R2 share x; copy R2's aligned yaw to R1.
-    tr1 = radar_positions["R1"]
-    tr2 = radar_positions["R2"]
-    r1_yaw = normalize_angle(tr2.rotation.yaw + 90)
-    radar_positions["R1"] = carla.Transform(
-        tr1.location,
-        carla.Rotation(tr1.rotation.pitch, r1_yaw, tr1.rotation.roll),
-    )
-
+    apply_stretch_radar_yaws(radar_positions, current_map)
     apply_radar_pitch(radar_positions)
+    print(f"Radar yaws: {radar_yaw_summary(radar_positions)}")
 
     camera_hfov = (
         float(camera_bp.get_attribute("fov").as_float())

@@ -11,99 +11,29 @@ _dc_entry.bootstrap(__file__)
 import argparse
 import csv
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Any
 
 import carla
 
-from capture.radar_layout import apply_radar_pitch
+from capture.radar_layout import apply_radar_pitch, apply_stretch_radar_yaws, stretch_radar_positions
 from dataset_paths import data_output_dir
 
 DATASET_RADAR_ROLE_PREFIX = "dataset_radar_"
 
-
-def make_transform(x, y, z, pitch, yaw, roll):
-    return carla.Transform(
-        carla.Location(x=x, y=y, z=z),
-        carla.Rotation(pitch=pitch, yaw=yaw, roll=roll),
-    )
+# Heights match RadarCameraSetupN.py (8 uses DATASET_RIG_HEIGHT_M / default 3 m).
+_LAYOUT_HEIGHT_M = {4: 13.0, 8: None, 12: 13.0, 14: 11.0}
 
 
-def normalize_angle(angle_deg):
-    return (angle_deg + 180.0) % 360.0 - 180.0
-
-
-def angular_distance(a_deg, b_deg):
-    return abs(normalize_angle(a_deg - b_deg))
-
-
-def compute_radar_yaw_toward_road(
-    current_map, location, fallback_yaw, offset_deg=40.0, use_opposite_side=False
-):
-    road_wp = current_map.get_waypoint(
-        location, project_to_road=True, lane_type=carla.LaneType.Driving
-    )
-    if road_wp is None:
-        return fallback_yaw
-
-    road_loc = road_wp.transform.location
-    dx = road_loc.x - location.x
-    dy = road_loc.y - location.y
-    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-        yaw_to_road = road_wp.transform.rotation.yaw
-    else:
-        yaw_to_road = math.degrees(math.atan2(dy, dx))
-
-    candidates = [yaw_to_road + offset_deg, yaw_to_road - offset_deg]
-    lane_yaws = [road_wp.transform.rotation.yaw, road_wp.transform.rotation.yaw + 180.0]
-    chosen = min(candidates, key=lambda c: min(angular_distance(c, ly) for ly in lane_yaws))
-    if use_opposite_side:
-        chosen = candidates[1] if abs(normalize_angle(chosen - candidates[0])) < 1e-6 else candidates[0]
-    return normalize_angle(chosen)
-
-
-def build_manual_radar_positions():
-    # Mirrors the manual placement used in RadarCameraSetup.py.
-    return {
-        "R1": make_transform(-33.825321, -52.015091, 1.0, 0.0, 0.0, 0.0),
-        "R2": make_transform(-33.825321, -74.745476, 1.0, 0.0, -179.403259, 0.0),
-        "R3": make_transform(-15.235109, -52.015091, 1.0, 0.0, 360.020691, 0.0),
-        "R4": make_transform(-15.235109, -74.745476, 1.0, 0.0, -179.085037, 0.0),
-        "R5": make_transform(3.355103, -52.015091, 1.0, 0.0, -179.085037, 0.0),
-        "R6": make_transform(3.355103, -74.745476, 1.0, 0.0, -179.085037, 0.0),
-        "R7": make_transform(21.945315, -52.015091, 1.0, 0.0, 359.976562, 0.0),
-        "R8": make_transform(21.945315, -74.745476, 1.0, 0.0, 179.976578, 0.0),
-        "R9": make_transform(40.535528, -52.015091, 1.0, 0.0, 1.382248, 0.0),
-        "R10": make_transform(40.535528, -74.745476, 1.0, 0.0, -151.803711, 0.0),
-        "R11": make_transform(59.125740, -52.015091, 1.0, 0.0, -179.085037, 0.0),
-        "R12": make_transform(59.125740, -74.745476, 1.0, 0.0, -179.085037, 0.0),
-    }
+def build_manual_radar_positions(count=12):
+    """Stretch-rig poses for the legacy (non --live-actors) export path."""
+    height = _LAYOUT_HEIGHT_M.get(count)
+    return stretch_radar_positions(count, height=height)
 
 
 def apply_road_alignment(radar_positions, current_map):
-    flipped_40_deg_names = {"R3", "R7", "R9", "R11"}
-    for name, tr in list(radar_positions.items()):
-        yaw = compute_radar_yaw_toward_road(
-            current_map,
-            tr.location,
-            tr.rotation.yaw,
-            offset_deg=40.0,
-            use_opposite_side=name in flipped_40_deg_names,
-        )
-        radar_positions[name] = carla.Transform(
-            tr.location,
-            carla.Rotation(pitch=tr.rotation.pitch, yaw=yaw, roll=tr.rotation.roll),
-        )
-
-    tr1 = radar_positions["R1"]
-    tr2 = radar_positions["R2"]
-    r1_yaw = normalize_angle(tr2.rotation.yaw)
-    radar_positions["R1"] = carla.Transform(
-        tr1.location,
-        carla.Rotation(tr1.rotation.pitch, r1_yaw, tr1.rotation.roll),
-    )
+    apply_stretch_radar_yaws(radar_positions, current_map)
     apply_radar_pitch(radar_positions)
     return radar_positions
 
@@ -328,7 +258,7 @@ def parse_args():
         help=(
             "Read extrinsics from live dataset_radar_* actors in CARLA (any radar count). "
             "Use with Start.py on shutdown while sensors are still loaded. "
-            "If omitted, uses manual R1..R12 transforms + map alignment (legacy)."
+            "If omitted, uses the stretch rig for 4/8/12/14 plus rig-heading yaw slew."
         ),
     )
     return parser.parse_args()
@@ -360,7 +290,15 @@ def main() -> int:
             return 1
         return 0
 
-    radar_positions = build_manual_radar_positions()
+    count = len(sensor_by_label)
+    if count not in _LAYOUT_HEIGHT_M:
+        print(
+            f"Stretch export path supports 4/8/12/14 radars (got {count}). "
+            "Use --live-actors with CARLA running.",
+            file=sys.stderr,
+        )
+        return 1
+    radar_positions = build_manual_radar_positions(count)
     current_map = world.get_map()
     radar_positions = apply_road_alignment(radar_positions, current_map)
     try:
