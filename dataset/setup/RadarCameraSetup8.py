@@ -27,10 +27,11 @@ from capture.CaptureRadarCameraData import (
     radar_sensor_tick_s_from_env,
 )
 from capture.radar_layout import (
+    apply_stretch_radar_yaws,
     radar_pitch_deg_from_env,
     radar_height_m_from_env,
+    radar_yaw_summary,
     stretch_radar_positions,
-    stretch_north_row_names,
     stretch_camera_transform,
 )
 from dataset_paths import config_dir
@@ -56,39 +57,6 @@ def make_transform(x, y, z, pitch, yaw, roll):
 
 def normalize_angle(angle_deg):
     return (angle_deg + 180.0) % 360.0 - 180.0
-
-
-def angular_distance(a_deg, b_deg):
-    return abs(normalize_angle(a_deg - b_deg))
-
-
-def compute_radar_yaw_toward_road(
-    current_map, location, fallback_yaw, offset_deg=40.0, use_opposite_side=False
-):
-    road_wp = current_map.get_waypoint(
-        location, project_to_road=True, lane_type=carla.LaneType.Driving
-    )
-    if road_wp is None:
-        return fallback_yaw
-
-    road_loc = road_wp.transform.location
-    dx = road_loc.x - location.x
-    dy = road_loc.y - location.y
-
-    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-        yaw_to_road = road_wp.transform.rotation.yaw
-    else:
-        yaw_to_road = math.degrees(math.atan2(dy, dx))
-
-    candidates = [yaw_to_road + offset_deg, yaw_to_road - offset_deg]
-    lane_yaws = [road_wp.transform.rotation.yaw, road_wp.transform.rotation.yaw + 180.0]
-
-    chosen = min(candidates, key=lambda c: min(angular_distance(c, ly) for ly in lane_yaws))
-
-    if use_opposite_side:
-        chosen = candidates[1] if abs(normalize_angle(chosen - candidates[0])) < 1e-6 else candidates[0]
-
-    return normalize_angle(chosen)
 
 
 def radar_debug_color_for_name(name, num_radars=8):
@@ -266,9 +234,8 @@ def main():
 
     # ~5 m from the nearest driving lane (was ~11 m — weak returns at shallow grazing angle).
     rh = radar_height_m_from_env()   # mounting height (m); DATASET_RIG_HEIGHT_M (default 3.0)
-    # Radars straddle the monitored stretch (SUMO edges 20/-20). All coordinates
-    # come from the shared, env-tunable helper in capture/radar_layout.py; the
-    # compute_radar_yaw_toward_road pass below then aims each radar at the road.
+    # Radars straddle the monitored stretch (SUMO edges 20/-20). XY from the
+    # shared helper; yaw looks inward then slews along DATASET_RADAR_LOOK_HEADING_DEG.
     radar_positions = stretch_radar_positions(8, height=rh)
     # Yaws are final and deterministic (capture/radar_layout.py:
     # stretch_radar_yaws). The former compute_radar_yaw_toward_road() pass
@@ -276,6 +243,7 @@ def main():
     # floating-point noise, which is why R5/R6/R8 faced the other way.
     # Override with DATASET_RIG_LOOK_DIR=east|west, DATASET_RIG_SKEW_DEG.
     apply_radar_pitch(radar_positions)
+    print(f"Radar yaws: {radar_yaw_summary(radar_positions)}")
 
     camera_hfov = (
         float(camera_bp.get_attribute("fov").as_float())
