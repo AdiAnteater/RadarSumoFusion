@@ -187,15 +187,21 @@ DEFAULT_FMCW_AZ_SIGMA_FLOOR_DEG = 0.3
 # Data loaders
 # ---------------------------------------------------------------------------
 def load_walker_positions(frames_path: Path) -> dict:
-    """Return {(frame_id, actor_id): (x, y, z)} for pedestrians only."""
+    """Return {(frame_id, actor_id): (x, y, z)} for EVERY labelable actor.
+
+    Historically pedestrians only. Now all actors: in the fused pipeline every
+    vehicle is mirrored from SUMO by physics-off set_transform, and CARLA's radar
+    derives Doppler from the physics-engine velocity, which is exactly zero for
+    such actors (capture 20260917_125123: 9,357 of 8.19 M returns had a non-zero
+    velocity). Doppler is therefore synthesized for all matched returns from the
+    ground-truth trajectory in actor_frames.jsonl.
+    """
     walker_pos: dict = {}
     with frames_path.open(encoding="utf-8") as f:
         for line in f:
             rec = json.loads(line)
             frame = int(rec["frame"])
             for a in rec.get("actors", []):
-                if a.get("kind") != "pedestrian":
-                    continue
                 loc = a["location"]
                 walker_pos[(frame, int(a["id"]))] = (
                     float(loc["x"]),
@@ -565,6 +571,7 @@ def post_process_capture_dir(
 
     stats = {
         "walker_fixed": 0, "walker_skipped": 0, "walker_clamped": 0,
+        "vehicle_fixed": 0, "vehicle_skipped": 0,
         "rcs_written": 0, "static_rcs": 0, "spikes": 0,
         "snr_written": 0, "visible_1": 0,
         "invis_range": 0, "invis_vel": 0, "invis_snr": 0,
@@ -579,6 +586,8 @@ def post_process_capture_dir(
         reader    = csv.DictReader(fin)
         in_fields = list(reader.fieldnames or [])
         out_fields = list(in_fields)
+        if "velocity_raw_mps" not in out_fields:
+            out_fields.append("velocity_raw_mps")
         if "rcs_dBsm" not in out_fields:
             out_fields.append("rcs_dBsm")
         if fmcw is not None:
@@ -596,24 +605,46 @@ def post_process_capture_dir(
                 frame_id = int(row["frame"])
 
                 # --------------------------------------------------------
-                # [A] Pedestrian velocity fix (bulk + micro-Doppler)
+                # [A] Doppler synthesis for every matched actor.
+                #     CARLA's radar Doppler is the physics velocity of the hit
+                #     actor, which is 0 for SUMO-mirrored (physics-off) vehicles
+                #     and for walkers. Replace it with the ground-truth radial
+                #     velocity: central-difference the logged trajectory and
+                #     project onto the sensor -> hit line of sight. The raw
+                #     CARLA value is preserved in velocity_raw_mps.
+                #     Pedestrians: stride fd (smooths the walker controller),
+                #     speed clamp, optional micro-Doppler jitter.
+                #     Vehicles: stride 1 (SUMO positions are exact), no clamp.
                 # --------------------------------------------------------
-                if aid_raw and kind == "pedestrian":
+                row["velocity_raw_mps"] = row.get("velocity_mps", "")
+                if aid_raw:
                     try:
                         aid = int(aid_raw)
                     except ValueError:
                         aid = None
+                    is_ped = kind == "pedestrian"
+                    stride = fd if is_ped else 1
                     if aid is not None:
-                        p_prev = walker_pos.get((frame_id - fd, aid))
-                        p_next = walker_pos.get((frame_id + fd, aid))
+                        p_prev = walker_pos.get((frame_id - stride, aid))
+                        p_next = walker_pos.get((frame_id + stride, aid))
                         p_now  = walker_pos.get((frame_id, aid))
-                        if p_prev and p_next and p_now:
-                            dt  = 2.0 * fd * dt_mean
+                        if p_now and not (p_prev and p_next):
+                            # Edge of the log: fall back to a one-sided difference.
+                            if p_prev:
+                                p_next, stride_eff = p_now, stride
+                            elif p_next:
+                                p_prev, stride_eff = p_now, stride
+                            else:
+                                stride_eff = 0
+                        else:
+                            stride_eff = 2 * stride
+                        if p_prev and p_next and p_now and stride_eff > 0:
+                            dt  = stride_eff * dt_mean
                             vx  = (p_next[0] - p_prev[0]) / dt
                             vy  = (p_next[1] - p_prev[1]) / dt
                             vz  = (p_next[2] - p_prev[2]) / dt
                             spd = math.sqrt(vx*vx + vy*vy + vz*vz)
-                            if spd > max_walker_speed:
+                            if is_ped and spd > max_walker_speed:
                                 scale = max_walker_speed / spd
                                 vx *= scale
                                 vy *= scale
@@ -622,23 +653,31 @@ def post_process_capture_dir(
                             sx = float(row["sensor_world_x_m"])
                             sy = float(row["sensor_world_y_m"])
                             sz = float(row["sensor_world_z_m"])
-                            ux = p_now[0] - sx
-                            uy = p_now[1] - sy
-                            uz = p_now[2] - sz
+                            hx = row.get("hit_world_x_m", "").strip()
+                            if hx:
+                                tx = float(hx)
+                                ty = float(row["hit_world_y_m"])
+                                tz = float(row["hit_world_z_m"])
+                            else:
+                                tx, ty, tz = p_now
+                            ux = tx - sx
+                            uy = ty - sy
+                            uz = tz - sz
                             n  = math.sqrt(ux*ux + uy*uy + uz*uz)
                             if n > 1e-6:
                                 ux /= n
                                 uy /= n
                                 uz /= n
+                                # CARLA sign convention: positive = receding from the sensor.
                                 v_rad = vx*ux + vy*uy + vz*uz
-                                if micro_doppler_sigma > 0:
+                                if is_ped and micro_doppler_sigma > 0:
                                     v_rad += rng.gauss(0.0, micro_doppler_sigma)
                                 row["velocity_mps"] = f"{v_rad:.6f}"
-                                stats["walker_fixed"] += 1
+                                stats["walker_fixed" if is_ped else "vehicle_fixed"] += 1
                             else:
-                                stats["walker_skipped"] += 1
+                                stats["walker_skipped" if is_ped else "vehicle_skipped"] += 1
                         else:
-                            stats["walker_skipped"] += 1
+                            stats["walker_skipped" if is_ped else "vehicle_skipped"] += 1
 
                 # --------------------------------------------------------
                 # [B] RCS dBsm calibration + realism
@@ -789,6 +828,8 @@ def post_process_capture_dir(
     tmp.replace(out)
 
     print(flush=True)
+    print(f"  Vehicle Doppler synthesized : {stats['vehicle_fixed']:,} "
+          f"(skipped {stats['vehicle_skipped']:,})", flush=True)
     print(f"  Walker velocities fixed     : {stats['walker_fixed']:,}", flush=True)
     print(f"  Walker rows skipped         : {stats['walker_skipped']:,}", flush=True)
     if stats["walker_clamped"]:

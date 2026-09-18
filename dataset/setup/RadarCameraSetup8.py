@@ -270,33 +270,11 @@ def main():
     # come from the shared, env-tunable helper in capture/radar_layout.py; the
     # compute_radar_yaw_toward_road pass below then aims each radar at the road.
     radar_positions = stretch_radar_positions(8, height=rh)
-
-    # North-kerb row takes the opposite +/-40 deg cone (symmetric mirror rule).
-    flipped_40_deg_names = stretch_north_row_names(8)
-
-    for name in radar_positions:
-        tr = radar_positions[name]
-        new_yaw = compute_radar_yaw_toward_road(
-            current_map,
-            tr.location,
-            tr.rotation.yaw,
-            offset_deg=40.0,
-            use_opposite_side=name in flipped_40_deg_names,
-        )
-        radar_positions[name] = carla.Transform(
-            tr.location,
-            carla.Rotation(tr.rotation.pitch, new_yaw, tr.rotation.roll),
-        )
-
-    # Same first-column fix as RadarCameraSetup12.py: R1/R2 share x; copy R2's aligned yaw to R1.
-    tr1 = radar_positions["R1"]
-    tr2 = radar_positions["R2"]
-    r1_yaw = normalize_angle(tr2.rotation.yaw + 90)
-    radar_positions["R1"] = carla.Transform(
-        tr1.location,
-        carla.Rotation(tr1.rotation.pitch, r1_yaw, tr1.rotation.roll),
-    )
-
+    # Yaws are final and deterministic (capture/radar_layout.py:
+    # stretch_radar_yaws). The former compute_radar_yaw_toward_road() pass
+    # and the R1 := R2+90 hack are gone: the pass tie-broke +/-40 deg on
+    # floating-point noise, which is why R5/R6/R8 faced the other way.
+    # Override with DATASET_RIG_LOOK_DIR=east|west, DATASET_RIG_SKEW_DEG.
     apply_radar_pitch(radar_positions)
 
     camera_hfov = (
@@ -351,7 +329,8 @@ def main():
                     f"hfov={attrs.get('horizontal_fov', '?')} "
                     f"vfov={attrs.get('vertical_fov', '?')} "
                     f"tick={attrs.get('sensor_tick', '?')} "
-                    f"pitch={tr.rotation.pitch:.1f}°"
+                    f"range={attrs.get('range', '?')} "
+                    f"yaw={tr.rotation.yaw:.1f} pitch={tr.rotation.pitch:.1f}"
                 )
             else:
                 print(f"Failed to spawn radar at {name}: {transform}")

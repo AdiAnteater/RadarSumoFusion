@@ -5,16 +5,24 @@ import os
 
 import carla
 
-# Down-tilt toward road traffic. CARLA radars use positive pitch to look down
-# (see PythonAPI/util/raycast_sensor_testing.py: Rotation(pitch=5) on radar mounts).
-RADAR_PITCH_DEG = 8.0
+# Radar tilt. CARLA/Unreal rotators use POSITIVE pitch = nose UP (the forward
+# vector is (cos p cos y, cos p sin y, sin p), so +pitch raises z). The earlier
+# +8 deg default therefore tilted every radar 8 deg UP (35% of returns landed
+# above 4.5 m, i.e. building facades). NEGATIVE pitch looks DOWN at the road.
+# raycast_sensor_testing.py uses pitch=+5 because its radar sits on a car roof
+# and is tilted UP to avoid the bonnet; that is the opposite of a pole mount.
+# Default -6 deg from a 3 m pole: boresight meets the road ~28 m out; with a
+# 30 deg VFOV the lower edge (-21 deg) reaches the ground at ~8 m and the
+# upper edge (+9 deg) stays low enough that far-lane vehicles (~40 m) are
+# still inside the cone.
+RADAR_PITCH_DEG = -6.0
 
 
 def radar_pitch_deg_from_env() -> float:
     raw = os.environ.get("DATASET_RADAR_PITCH_DEG", "").strip()
     if raw:
         try:
-            return max(-30.0, min(float(raw), 30.0))
+            return max(-45.0, min(float(raw), 30.0))
         except ValueError:
             pass
     return RADAR_PITCH_DEG
@@ -68,6 +76,21 @@ RIG_HALF_WIDTH_M = 20.5    # centre -> each radar row (rows ~y0.2 and ~y41.2)
 CAM_HEIGHT_M = 6.5         # camera mount height
 CAM_END_MARGIN_M = 16.0    # camera set-back beyond the stretch end
 
+# Radar aiming. Every radar looks ACROSS the boulevard toward the far kerb and
+# is skewed ALONG the stretch by RIG_SKEW_DEG so that all radars share one
+# along-stretch look direction (RIG_LOOK_DIR). "east" = +heading (the direction
+# the overview camera looks); "west" = -heading.
+#   south row yaw = heading + (90 - skew)  [east]   or  heading + 90 + skew  [west]
+#   north row yaw = heading - (90 - skew)  [east]   or  heading - 90 - skew  [west]
+# With heading 0 / skew 40 this gives 50 / -50 (east) or 130 / -130 (west).
+# This replaces the old per-radar compute_radar_yaw_toward_road() pass in the
+# setup scripts: that pass picked between +40 and -40 by comparing angular
+# distances that are an EXACT tie on a straight road, so which side won was
+# decided by floating-point noise in the projected waypoint (R5/R6/R8 ended up
+# facing west while R1/R3/R7/R2/R4 faced east in capture 20260917_125123).
+RIG_LOOK_DIR = "east"
+RIG_SKEW_DEG = 40.0
+
 
 def _env_float(name, default):
     raw = os.environ.get(name, "").strip()
@@ -98,15 +121,44 @@ def rig_half_width_m_from_env():
     return max(1.0, _env_float("DATASET_RIG_HALF_WIDTH_M", RIG_HALF_WIDTH_M))
 
 
+def rig_look_dir_from_env():
+    raw = os.environ.get("DATASET_RIG_LOOK_DIR", "").strip().lower()
+    if raw in ("east", "west"):
+        return raw
+    return RIG_LOOK_DIR
+
+
+def rig_skew_deg_from_env():
+    return max(0.0, min(_env_float("DATASET_RIG_SKEW_DEG", RIG_SKEW_DEG), 85.0))
+
+
+def _normalize_deg(a):
+    return (a + 180.0) % 360.0 - 180.0
+
+
+def stretch_radar_yaws(heading_deg=None, look_dir=None, skew_deg=None):
+    """(south_row_yaw, north_row_yaw) in CARLA world degrees. Deterministic."""
+    H = rig_heading_deg_from_env() if heading_deg is None else float(heading_deg)
+    look = rig_look_dir_from_env() if look_dir is None else look_dir
+    skew = rig_skew_deg_from_env() if skew_deg is None else float(skew_deg)
+    if look == "west":
+        south = H + 90.0 + skew
+        north = H - 90.0 - skew
+    else:
+        south = H + 90.0 - skew
+        north = H - 90.0 + skew
+    return _normalize_deg(south), _normalize_deg(north)
+
+
 def stretch_radar_positions(count, height=None):
     """Two-row straddle rig on the monitored stretch.
 
     Returns {"R1": carla.Transform, ...} with ``count`` radars: count//2 stations
-    spaced along the stretch, each with one radar on the south kerb (odd R#, base
-    yaw 0) and one on the north kerb (even R#, base yaw 180). These base yaws only
-    SEED the setup scripts' compute_radar_yaw_toward_road() pass, which then aims
-    each radar at the real lane direction from the map -- so moving the rig here
-    auto-reorients it to the boulevard. ``count`` must be even.
+    spaced along the stretch, each with one radar on the south kerb (odd R#) and
+    one on the north kerb (even R#). Yaws are FINAL (see stretch_radar_yaws):
+    every radar looks across the road toward the far kerb, skewed along the
+    stretch so all radars share the same look direction. Pitch is applied
+    afterward by apply_radar_pitch(). ``count`` must be even.
     """
     if count % 2 != 0:
         raise ValueError(f"radar count must be even (got {count})")
@@ -115,6 +167,7 @@ def stretch_radar_positions(count, height=None):
     length = rig_length_m_from_env()
     half_w = rig_half_width_m_from_env()
     z = radar_height_m_from_env() if height is None else float(height)
+    south_yaw, north_yaw = stretch_radar_yaws()
 
     dx, dy = math.cos(H), math.sin(H)      # along the stretch
     nx, ny = -math.sin(H), math.cos(H)     # across the stretch (toward north row)
@@ -134,11 +187,11 @@ def stretch_radar_positions(count, height=None):
         s_id, n_id = 2 * i + 1, 2 * i + 2
         positions[f"R{s_id}"] = carla.Transform(
             carla.Location(x=south[0], y=south[1], z=z),
-            carla.Rotation(0.0, 0.0, 0.0),
+            carla.Rotation(0.0, south_yaw, 0.0),
         )
         positions[f"R{n_id}"] = carla.Transform(
             carla.Location(x=north[0], y=north[1], z=z),
-            carla.Rotation(0.0, 180.0, 0.0),
+            carla.Rotation(0.0, north_yaw, 0.0),
         )
     return positions
 

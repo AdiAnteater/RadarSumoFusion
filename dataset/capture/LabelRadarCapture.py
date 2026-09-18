@@ -50,6 +50,9 @@ from testing.RadarLabelingTestReport import (
 
 RADAR_CSV = "radar_data.csv"
 LABELED_CSV = "radar_data_labeled.csv"
+# Added by the labeler: exact world hit point + physical class of every return
+# (vehicle / pedestrian / road / structure / unassigned).
+EXTRA_LABEL_COLUMNS = ["hit_world_x_m", "hit_world_y_m", "hit_world_z_m", "return_class"]
 
 
 def label_after_capture_from_env() -> bool:
@@ -238,8 +241,13 @@ def label_radar_capture_dir(
     ) as wf:
         reader = csv.DictReader(rf)
         fieldnames = list(reader.fieldnames or [])
+        for extra_col in EXTRA_LABEL_COLUMNS:
+            if extra_col not in fieldnames:
+                fieldnames.append(extra_col)
         writer = csv.DictWriter(wf, fieldnames=fieldnames)
         writer.writeheader()
+        class_counts: dict[str, int] = {}
+        class_counts_by_sensor: dict[str, dict[str, int]] = {}
 
         for row in reader:
             frame_id = int(row["frame"])
@@ -279,6 +287,15 @@ def label_radar_capture_dir(
                 if label["nearest_bbox_margin_m"] is not None
                 else ""
             )
+            hit = label["hit_world"]
+            row["hit_world_x_m"] = f"{hit.x:.4f}"
+            row["hit_world_y_m"] = f"{hit.y:.4f}"
+            row["hit_world_z_m"] = f"{hit.z:.4f}"
+            rc = label["return_class"]
+            row["return_class"] = rc
+            class_counts[rc] = class_counts.get(rc, 0) + 1
+            per = class_counts_by_sensor.setdefault(sensor_label, {})
+            per[rc] = per.get(rc, 0) + 1
 
             if label["matched"] and label["actor_id"] is not None:
                 row["matched_actor_id"] = str(label["actor_id"])
@@ -370,12 +387,44 @@ def label_radar_capture_dir(
     print(banner, flush=True)
     print(flush=True)
 
+    _write_return_class_summary(capture_dir, class_counts, class_counts_by_sensor, rows_written)
+
     write_capture_labeling_report(
         collector,
         str(capture_dir),
         labelable_min_speed_mps=labelable_min_speed,
     )
     return out_path
+
+
+def _write_return_class_summary(capture_dir: Path, counts: dict, by_sensor: dict, total: int) -> None:
+    """Physical breakdown of every return (this is the number that matters for the
+    dataset, not the QA 'match rate given candidates')."""
+    order = ["vehicle", "pedestrian", "road", "structure", "unassigned"]
+    lines = ["Return classes (all returns):"]
+    for k in order:
+        n = counts.get(k, 0)
+        lines.append(f"  {k:11s} {n:>12,}  {100.0 * n / max(total, 1):6.2f}%")
+    lines.append("Per sensor (vehicle / pedestrian / road / structure / unassigned):")
+    for sensor in sorted(by_sensor):
+        per = by_sensor[sensor]
+        tot = max(sum(per.values()), 1)
+        lines.append(
+            f"  {sensor}: " + "  ".join(f"{k[:4]}={100.0 * per.get(k, 0) / tot:5.1f}%" for k in order)
+        )
+    text = "\n".join(lines)
+    print(text, flush=True)
+    qa_dir = capture_dir / "radar_labeling_qa"
+    try:
+        qa_dir.mkdir(parents=True, exist_ok=True)
+        (qa_dir / "return_class_summary.txt").write_text(text + "\n", encoding="utf-8")
+        import json as _json
+        (qa_dir / "return_class_summary.json").write_text(
+            _json.dumps({"total": total, "counts": counts, "by_sensor": by_sensor}, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"[label] could not write return_class_summary: {exc}", file=sys.stderr, flush=True)
 
 
 def main() -> int:

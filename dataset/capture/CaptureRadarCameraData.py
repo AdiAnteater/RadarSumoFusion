@@ -42,11 +42,23 @@ from testing.RadarLabelingTestReport import (
     write_report,
 )
 
-NEARBY_DISTANCE_M = 35.0
+# Camera "nearby actor" bookkeeping radius (metadata only; every camera frame is
+# saved regardless). 90 m covers the whole stretch from the set-back camera.
+NEARBY_DISTANCE_M = 90.0
 # Default radar sensor limits (overridden per actor when attributes are present).
+# NOTE on CARLA's radar "range": the sensor casts rays to a RECTANGLE at x=range
+# (y half-size range*tan(hfov/2), z half-size range*tan(vfov/2)), so oblique rays
+# are LONGER than range: up to range*sqrt(1+tan^2(hfov/2)+tan^2(vfov/2)). With
+# 35 m / 120 deg / 60 deg that is 72.9 m, and capture 20260917_125123 indeed
+# reports depths up to 66 m (p90 = 42 m). radar_effective_max_depth_m() gives
+# the true reach; the candidate gate must use it, not RADAR_MAX_RANGE_M.
 RADAR_MAX_RANGE_M = 35.0
 RADAR_HORIZONTAL_FOV_DEG = 120.0
-RADAR_VERTICAL_FOV_DEG = 60.0
+# 30 deg (was 60): a 60 deg cone from a 3 m pole spends most rays on the sky,
+# facades and the road within 5 m. 30 deg (+/-15) with the -6 deg down-tilt
+# covers the road from ~8 m to beyond the far lane. Typical roadside 4D radars
+# have 20-30 deg elevation FOV.
+RADAR_VERTICAL_FOV_DEG = 30.0
 # CARLA default points_per_second is 1500; raise for denser returns (CPU cost scales up).
 # Very high values block the client callback thread and stall the sensor stream.
 # 15000 is the tuned corridor default: with VFOV=60° it gives ~55% per-tick vehicle
@@ -61,13 +73,31 @@ RADAR_CANDIDATE_DEPTH_MARGIN_M = 3.0
 # Extra horizontal tolerance (deg) for beam vs actor bearing / OBB angular width.
 RADAR_CANDIDATE_AZIMUTH_MARGIN_DEG = 8.0
 # Pre-filter: actor must be within this OBB margin (m) of the hit to count as a candidate.
-# Rejects beam-only FPs (road return + car in same direction). None = beam gate only.
-RADAR_CANDIDATE_HIT_MAX_BBOX_MARGIN_M = 7.0
+# This ONLY defines the denominator of the QA "match rate given candidates" (it never
+# changes which returns get labeled; labeling is decided by the 0.5 m margin below).
+# The old 7 m bubble made that denominator meaningless: in capture 20260917_125123
+# 65% of "unmatched with candidates" were road-surface returns (z ~ 0) up to 7 m
+# from a car, so the report showed "35% matched" while recall on true on-body
+# returns was 99%. 2.0 m keeps the metric about the actor, not the road around it.
+RADAR_CANDIDATE_HIT_MAX_BBOX_MARGIN_M = 2.0
 # Legacy wide bubble (reports only).
 RADAR_ACTOR_PROXIMITY_M = 40.0
 RADAR_VEHICLE_PROXIMITY_M = RADAR_ACTOR_PROXIMITY_M
 # Inflate each actor OBB extent when computing margin (m per axis).
-BBOX_MATCH_EXTENT_INFLATION_M = 0.75
+# 0.2 (was 0.75): with the exact hit reconstruction below, true on-body returns
+# fall INSIDE the OBB; 0.75 mostly admitted road returns beside the car (99% of
+# the returns that lived in the 0..0.75 m shell were at z = 0). 0.2 covers mesh
+# parts that poke out of the CARLA bounding box (mirrors, bumpers).
+BBOX_MATCH_EXTENT_INFLATION_M = 0.2
+# Ground rejection: a hit that lies at/below the actor's own ground plane
+# (OBB bottom + this clearance) and is OUTSIDE the un-inflated OBB is a road
+# return next to / under the car, never a body hit. Tyre hits inside the OBB
+# are unaffected.
+GROUND_REJECT_CLEARANCE_M = 0.12
+# Height above which a return cannot be a vehicle/pedestrian (trucks/buses < 4.5 m).
+STRUCTURE_MIN_Z_M = 4.5
+# Below this world z a return is on the road surface (stretch is flat at z=0).
+ROAD_SURFACE_MAX_Z_M = 0.25
 # Max distance from hit to OBB surface for a primary match (m).
 # Default 0.5 m: derived from the uncensored nearest-margin distribution of a real
 # capture (tools/derive_match_threshold_uncensored.py). Genuine ray hits land ON
@@ -83,8 +113,11 @@ BBOX_MATCH_EXTENT_INFLATION_M = 0.75
 # automatically. Override the constant via DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M
 # (clamped 0.5–25 m).
 RADAR_HIT_MATCH_MAX_MARGIN_M = 0.5
-# Looser margin when exactly one actor is in the depth/azimuth gate.
-RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M = 1.0
+# Margin when exactly one actor is in the depth/azimuth gate. Was 1.0 m: that
+# loosening (plus the approximate hit reconstruction) accepted ~13% wrong labels
+# in capture 20260917_125123 (road returns 0.67-0.98 m from the car, z = 0).
+# Same as the primary margin now; raise deliberately via env if ever needed.
+RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M = 0.5
 # Backward-compatible alias for reports / CLI (near-surface threshold, not extent inflation).
 RADAR_HIT_MATCH_MAX_DISTANCE_M = RADAR_HIT_MATCH_MAX_MARGIN_M
 # Min |radial velocity| (m/s) to score a return. Default 0 includes parked/stalled actors.
@@ -102,7 +135,7 @@ def _expected_radar_count_from_env() -> int:
     try:
         n = int(raw)
     except ValueError:
-        return 12
+        return 8
     return max(1, min(n, 64))
 
 
@@ -808,6 +841,23 @@ def configure_dataset_radar_blueprint(radar_bp) -> int:
     return pps
 
 
+def radar_effective_max_depth_m(
+    range_m=RADAR_MAX_RANGE_M, hfov_deg=None, vfov_deg=None
+) -> float:
+    """Longest ray CARLA's radar can return for the given blueprint values.
+
+    CARLA aims each ray at a point on the rectangle x=range, |y|<=range*tan(hfov/2),
+    |z|<=range*tan(vfov/2), so corner rays are range*sqrt(1+tan^2+tan^2) long.
+    """
+    if hfov_deg is None:
+        hfov_deg = radar_horizontal_fov_deg_from_env()
+    if vfov_deg is None:
+        vfov_deg = radar_vertical_fov_deg_from_env()
+    ty = math.tan(math.radians(min(hfov_deg, 179.0) / 2.0))
+    tz = math.tan(math.radians(min(vfov_deg, 179.0) / 2.0))
+    return float(range_m) * math.sqrt(1.0 + ty * ty + tz * tz)
+
+
 def radar_sensor_limits(radar_actor):
     """Read range (m) and horizontal FOV (deg) from a spawned radar actor."""
     attrs = radar_actor.attributes
@@ -899,24 +949,22 @@ def precompute_actor_frame_cache(actors, world=None):
         actor["_max_extent_xy_m"] = math.hypot(extent.x, extent.y)
         rot = actor.get("rotation") or {}
         try:
-            inv_rot = carla.Rotation(
-                pitch=-float(rot.get("pitch", 0.0)),
-                yaw=-float(rot.get("yaw", 0.0)),
-                roll=-float(rot.get("roll", 0.0)),
-            )
-            actor["_inv_actor_tf"] = carla.Transform(carla.Location(), inv_rot)
+            actor["_inv_actor_tf"] = _inverse_rotation_transform(carla.Rotation(
+                pitch=float(rot.get("pitch", 0.0)),
+                yaw=float(rot.get("yaw", 0.0)),
+                roll=float(rot.get("roll", 0.0)),
+            ))
         except Exception:  # noqa: BLE001
             pass
         bbox = actor.get("bbox") or {}
         bbox_rot = bbox.get("rotation")
         if bbox_rot:
             try:
-                inv_brot = carla.Rotation(
-                    pitch=-float(bbox_rot.get("pitch", 0.0)),
-                    yaw=-float(bbox_rot.get("yaw", 0.0)),
-                    roll=-float(bbox_rot.get("roll", 0.0)),
-                )
-                actor["_inv_bbox_tf"] = carla.Transform(carla.Location(), inv_brot)
+                actor["_inv_bbox_tf"] = _inverse_rotation_transform(carla.Rotation(
+                    pitch=float(bbox_rot.get("pitch", 0.0)),
+                    yaw=float(bbox_rot.get("yaw", 0.0)),
+                    roll=float(bbox_rot.get("roll", 0.0)),
+                ))
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1050,6 +1098,10 @@ def _actors_in_depth_azimuth_gate(
 ):
     if world is None:
         return list(candidate_actors)
+    max_range_m = max(
+        float(max_range_m),
+        radar_effective_max_depth_m(max_range_m, None, max(radar_vertical_fov_deg_from_env(), 60.0)),
+    )
     gated = []
     for actor in candidate_actors:
         if actor_visible_in_detection_beam(
@@ -1071,42 +1123,13 @@ def vehicle_snapshots_near_sensor(sensor_location, vehicle_snapshots, max_distan
 
 
 def radar_detection_world_location_legacy(sensor_transform, detection):
-    """Previous spherical conversion (kept for TestRadarLabeling.py comparison)."""
-    forward_depth = detection.depth * math.cos(detection.azimuth) * math.cos(detection.altitude)
-    right_depth = detection.depth * math.sin(detection.azimuth) * math.cos(detection.altitude)
-    up_depth = detection.depth * math.sin(detection.altitude)
-    sensor_location = sensor_transform.location
-    sensor_rotation = sensor_transform.rotation
-    yaw = math.radians(sensor_rotation.yaw)
-    pitch = math.radians(sensor_rotation.pitch)
-    roll = math.radians(sensor_rotation.roll)
+    """DEPRECATED approximation, kept only for TestRadarLabeling's comparison mode.
 
-    cy = math.cos(yaw)
-    sy = math.sin(yaw)
-    cp = math.cos(pitch)
-    sp = math.sin(pitch)
-    cr = math.cos(roll)
-    sr = math.sin(roll)
-
-    x = forward_depth
-    y = right_depth
-    z = up_depth
-
-    wx = cy * cp * x + (cy * sp * sr - sy * cr) * y + (cy * sp * cr + sy * sr) * z
-    wy = sy * cp * x + (sy * sp * sr + cy * cr) * y + (sy * sp * cr - cy * sr) * z
-    wz = -sp * x + cp * sr * y + cp * cr * z
-
-    return carla.Location(
-        x=sensor_location.x + wx,
-        y=sensor_location.y + wy,
-        z=sensor_location.z + wz,
-    )
-
-
-def radar_detection_world_location(sensor_transform, detection):
-    """
-    World-space hit point using CARLA's radar convention (see PythonAPI/examples/manual_control.py):
-    depth along sensor forward, with azimuth/altitude applied as yaw/pitch offsets in degrees.
+    Composes the beam as Euler offsets (sensor pitch + altitude, sensor yaw +
+    azimuth), which is what manual_control.py does for drawing. That is only
+    exact when the sensor pitch is 0: with an 8 deg mount pitch it is off by
+    0.8 m on average and up to 4.6 m at the cone edges (measured on capture
+    20260917_125123). Do not use for labeling.
     """
     rot = sensor_transform.rotation
     beam_rot = carla.Rotation(
@@ -1121,20 +1144,85 @@ def radar_detection_world_location(sensor_transform, detection):
     return carla.Location(loc.x + offset.x, loc.y + offset.y, loc.z + offset.z)
 
 
+def radar_detection_world_location(sensor_transform, detection):
+    """Exact world-space hit point.
+
+    CARLA computes each detection's azimuth/altitude with
+    FMath::GetAzimuthAndElevation() against the sensor's own X/Y/Z axes, so the
+    ray direction in the SENSOR frame is the spherical unit vector
+        (cos(alt) cos(az), cos(alt) sin(az), sin(alt))
+    and the hit is that vector scaled by depth, pushed through the sensor's
+    full transform (carla.Transform.transform applies the same UE rotation
+    matrix the server used). No Euler-angle addition, valid for any mount
+    pitch/roll.
+    """
+    d = float(detection.depth)
+    ca = math.cos(detection.altitude)
+    local = carla.Location(
+        x=d * ca * math.cos(detection.azimuth),
+        y=d * ca * math.sin(detection.azimuth),
+        z=d * math.sin(detection.altitude),
+    )
+    return sensor_transform.transform(local)
+
+
+_HAS_INVERSE_TRANSFORM = hasattr(carla.Transform, "inverse_transform")
+
+
+def _inverse_rotation_transform(rotation):
+    """Transform that maps a WORLD offset into the frame rotated by ``rotation``.
+
+    Uses carla.Transform.inverse_transform on a rotation-only transform when the
+    API has it (exact R^T). Otherwise falls back to Rotation(-p, -y, -r), which
+    is only exact for yaw-only rotations (fine for road vehicles on the flat).
+    """
+    if _HAS_INVERSE_TRANSFORM:
+        return carla.Transform(carla.Location(), carla.Rotation(
+            pitch=float(rotation.pitch), yaw=float(rotation.yaw), roll=float(rotation.roll)))
+    return carla.Transform(carla.Location(), carla.Rotation(
+        pitch=-float(rotation.pitch), yaw=-float(rotation.yaw), roll=-float(rotation.roll)))
+
+
+def _apply_inverse_rotation(inv_tf, offset):
+    if _HAS_INVERSE_TRANSFORM:
+        return inv_tf.inverse_transform(carla.Location(offset.x, offset.y, offset.z))
+    return inv_tf.transform(carla.Location(offset.x, offset.y, offset.z))
+
+
 def _world_offset_in_actor_frame(world_offset, actor_rotation):
     """Rotate a world-space offset into the actor's local frame."""
-    inv_rot = carla.Rotation(
-        pitch=-actor_rotation.pitch,
-        yaw=-actor_rotation.yaw,
-        roll=-actor_rotation.roll,
-    )
-    return carla.Transform(carla.Location(), inv_rot).transform(world_offset)
+    return _apply_inverse_rotation(_inverse_rotation_transform(actor_rotation), world_offset)
+
+
+GROUND_REJECT_MARGIN_M = 9.0
+
+
+def _obb_margin_from_local(lx, ly, lz, ex, ey, ez, inflation):
+    """Margin (m) of a hit expressed in the actor OBB frame.
+
+    0 when inside the true box; GROUND_REJECT_MARGIN_M when the hit is below
+    the actor's ground plane (a road return beside/under the actor); otherwise
+    the distance to the box inflated by ``inflation`` on every axis.
+    """
+    ax, ay, az = abs(lx), abs(ly), abs(lz)
+    if ax <= ex and ay <= ey and az <= ez:
+        return 0.0
+    if lz < -ez + GROUND_REJECT_CLEARANCE_M:
+        return GROUND_REJECT_MARGIN_M
+    dx = max(0.0, ax - (ex + inflation))
+    dy = max(0.0, ay - (ey + inflation))
+    dz = max(0.0, az - (ez + inflation))
+    if dx == 0.0 and dy == 0.0 and dz == 0.0:
+        return 0.0
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
 def actor_bbox_margin_m(world, hit_location, actor_snapshot, inflation_m=BBOX_MATCH_EXTENT_INFLATION_M):
     """
     Signed margin to the actor OBB in meters: 0 if inside (with optional inflation),
-    otherwise the shortest distance from the hit to the box surface.
+    otherwise the shortest distance from the hit to the box surface. Hits below the
+    actor's ground plane are returned as GROUND_REJECT_MARGIN_M (see
+    _obb_margin_from_local).
 
     Fast path: when precompute_actor_frame_cache has populated _world_center,
     _extent, _inv_actor_tf (and optionally _inv_bbox_tf), skips reconstructing
@@ -1155,16 +1243,13 @@ def actor_bbox_margin_m(world, hit_location, actor_snapshot, inflation_m=BBOX_MA
             hit_location.y - cached_center.y,
             hit_location.z - cached_center.z,
         )
-        local = cached_inv_actor_tf.transform(delta)
+        local = _apply_inverse_rotation(cached_inv_actor_tf, delta)
         if cached_inv_bbox_tf is not None:
-            local = cached_inv_bbox_tf.transform(local)
-        inflation = inflation_m
-        dx = max(0.0, abs(local.x) - (cached_extent.x + inflation))
-        dy = max(0.0, abs(local.y) - (cached_extent.y + inflation))
-        dz = max(0.0, abs(local.z) - (cached_extent.z + inflation))
-        if dx == 0.0 and dy == 0.0 and dz == 0.0:
-            return 0.0
-        return math.sqrt(dx * dx + dy * dy + dz * dz)
+            local = _apply_inverse_rotation(cached_inv_bbox_tf, local)
+        return _obb_margin_from_local(
+            local.x, local.y, local.z,
+            cached_extent.x, cached_extent.y, cached_extent.z, inflation_m,
+        )
 
     if logged_bbox and actor_snapshot.get("location") and actor_snapshot.get("rotation"):
         rot = actor_snapshot["rotation"]
@@ -1192,13 +1277,10 @@ def actor_bbox_margin_m(world, hit_location, actor_snapshot, inflation_m=BBOX_MA
                     float(bbox_rot["roll"]),
                 ),
             )
-        inflation = inflation_m
-        dx = max(0.0, abs(local.x) - (float(ex["x"]) + inflation))
-        dy = max(0.0, abs(local.y) - (float(ex["y"]) + inflation))
-        dz = max(0.0, abs(local.z) - (float(ex["z"]) + inflation))
-        if dx == 0.0 and dy == 0.0 and dz == 0.0:
-            return 0.0
-        return math.sqrt(dx * dx + dy * dy + dz * dz)
+        return _obb_margin_from_local(
+            local.x, local.y, local.z,
+            float(ex["x"]), float(ex["y"]), float(ex["z"]), inflation_m,
+        )
 
     if world is None:
         return None
@@ -1219,16 +1301,10 @@ def actor_bbox_margin_m(world, hit_location, actor_snapshot, inflation_m=BBOX_MA
     if bbox.rotation:
         local = _world_offset_in_actor_frame(local, bbox.rotation)
 
-    ex = bbox.extent.x + inflation_m
-    ey = bbox.extent.y + inflation_m
-    ez = bbox.extent.z + inflation_m
-
-    dx = max(0.0, abs(local.x) - ex)
-    dy = max(0.0, abs(local.y) - ey)
-    dz = max(0.0, abs(local.z) - ez)
-    if dx == 0.0 and dy == 0.0 and dz == 0.0:
-        return 0.0
-    return math.sqrt(dx * dx + dy * dy + dz * dz)
+    return _obb_margin_from_local(
+        local.x, local.y, local.z,
+        bbox.extent.x, bbox.extent.y, bbox.extent.z, inflation_m,
+    )
 
 
 def vehicle_hit_distance_m(world, hit_location, vehicle_snapshot):
@@ -1395,7 +1471,7 @@ def match_radar_detection_to_actor(
     max_margin_m=RADAR_HIT_MATCH_MAX_MARGIN_M,
     single_candidate_max_margin_m=RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M,
     extent_inflation_m=BBOX_MATCH_EXTENT_INFLATION_M,
-    use_legacy_hit_fallback=True,
+    use_legacy_hit_fallback=False,
 ):
     """
     Match a radar return to an actor: primary hit, legacy hit, then single-target fallbacks.
@@ -1538,12 +1614,20 @@ def evaluate_radar_detection_label(
         hit_match_max_margin_m = radar_hit_match_max_margin_m_from_env()
     if single_candidate_max_margin_m is None:
         single_candidate_max_margin_m = radar_single_candidate_max_margin_m_from_env()
+    # CARLA rays reach past the nominal range on oblique paths (see
+    # radar_effective_max_depth_m); gate on the true reach or far-lane hits at
+    # 35-55 m never get a candidate (655 of them in capture 20260917_125123).
+    effective_range_m = max(
+        float(range_m),
+        radar_effective_max_depth_m(range_m, hfov_deg, max(radar_vertical_fov_deg_from_env(), 60.0)),
+    )
+    hit_loc = radar_detection_world_location(sensor_transform, detection)
     match_candidates = actor_snapshots_for_radar_detection(
         sensor_transform,
         detection,
         actors,
         world,
-        max_range_m=range_m,
+        max_range_m=effective_range_m,
         horizontal_fov_deg=hfov_deg,
         hit_max_bbox_margin_m=candidate_hit_m,
     )
@@ -1568,7 +1652,6 @@ def evaluate_radar_detection_label(
     uncensored_nearest_bbox_margin_m = None
 
     if had_candidates:
-        hit_loc = radar_detection_world_location(sensor_transform, detection)
         uncensored_nearest_bbox_margin_m = nearest_actor_bbox_margin_m(
             hit_loc, match_candidates, world
         )
@@ -1598,10 +1681,21 @@ def evaluate_radar_detection_label(
             )
             legacy_matched = legacy_ma is not None
 
+    if matched:
+        return_class = actor_kind or "vehicle"
+    elif hit_loc.z <= ROAD_SURFACE_MAX_Z_M:
+        return_class = "road"
+    elif hit_loc.z >= STRUCTURE_MIN_Z_M:
+        return_class = "structure"
+    else:
+        return_class = "unassigned"
+
     return {
         "scored": scored,
         "had_candidates": had_candidates,
         "matched": matched,
+        "return_class": return_class,
+        "hit_world": hit_loc,
         "legacy_matched": legacy_matched,
         "actor_id": actor_id,
         "actor_kind": actor_kind,
@@ -2052,15 +2146,58 @@ class RadarQueueConsumer:
             )
 
 
-class CameraFrameWriter:
-    """Offload camera PNG + FOV metadata off the CARLA listen thread.
+def camera_encoder_threads_from_env() -> int:
+    raw = os.environ.get("DATASET_CAMERA_ENCODER_THREADS", "").strip()
+    try:
+        return max(1, min(int(raw), 8)) if raw else 2
+    except ValueError:
+        return 2
 
-    The listen callback must stay O(1). ``get_radar_target_snapshots()`` is one
-    RPC per actor, and ``save_to_disk()`` encodes a PNG — either one on the
-    sensor thread stalls the stream the same way the old per-actor ``on_tick``
-    RPC storm did (capture 231410). Hold the ``carla.Image`` (it owns the
-    pixel buffer) on a queue; this thread does FOV lookup from the already-
-    cached tick snapshots and the disk write.
+
+def camera_max_backlog_from_env() -> int:
+    """Max camera frames allowed to wait for PNG encoding before NEW frames are
+    dropped (each 800x600 frame holds ~2 MB). 0 = never drop (default)."""
+    raw = os.environ.get("DATASET_CAMERA_MAX_BACKLOG", "").strip()
+    try:
+        return max(0, int(raw)) if raw else 0
+    except ValueError:
+        return 0
+
+
+def _encode_carla_image_png(image, path: str) -> None:
+    """Write a carla.Image as PNG. Uses numpy + Pillow (compress_level=1, several
+    times faster than CARLA's save_to_disk) when available; falls back otherwise."""
+    try:
+        import numpy as np  # noqa: WPS433
+        from PIL import Image as PILImage  # noqa: WPS433
+    except ImportError:
+        image.save_to_disk(path)
+        return
+    buf = np.frombuffer(image.raw_data, dtype=np.uint8)
+    arr = buf.reshape((image.height, image.width, 4))[:, :, :3][:, :, ::-1]  # BGRA -> RGB
+    PILImage.fromarray(np.ascontiguousarray(arr)).save(path, format="PNG", compress_level=1)
+
+
+class CameraFrameWriter:
+    """Two-stage camera pipeline: metadata now, PNG encoding in the background.
+
+    Why two stages (capture 20260917_125123 / _162136 wrote exactly 41 camera
+    frames then went silent for the rest of the run):
+
+    * The listen callback must stay O(1), so it only enqueues the carla.Image.
+    * The OLD single writer thread did the actor lookup AND the PNG encode per
+      frame. save_to_disk is slower than one 20 Hz tick on a laptop, so the
+      queue fell behind; once it lagged more than TickActorSnapshotter's
+      in-memory window (600 frames = 30 s) every lookup returned an EMPTY actor
+      list, and the old writer silently skipped frames with no nearby actor.
+      From then on nothing was written at all. A faster machine never lags,
+      which is why a colleague could not reproduce it.
+
+    Now stage 1 (``_meta_loop``) only does the cheap snapshot lookup + CSV row,
+    so it keeps up with the tick and always sees a fresh snapshot; stage 2 (a
+    small thread pool) encodes PNGs and may fall behind without affecting
+    metadata. Every frame is saved, with or without actors nearby; a frame whose
+    snapshot really is missing gets empty actor fields and a counter bump.
     """
 
     def __init__(
@@ -2071,6 +2208,8 @@ class CameraFrameWriter:
         lock: threading.Lock,
         counts: dict,
     ) -> None:
+        import concurrent.futures  # noqa: WPS433
+
         self._snapshotter = snapshotter
         self._csv_writer = camera_csv_writer
         self._camera_file = camera_file
@@ -2080,9 +2219,18 @@ class CameraFrameWriter:
         self._closed = False
         self.dropped = 0
         self.enqueued = 0
+        self.missing_snapshot = 0
         self._write_errors = 0
+        self._encode_errors = 0
+        self._encode_pending = 0
+        self._encode_lock = threading.Lock()
+        self._max_backlog = camera_max_backlog_from_env()
+        self._last_backlog_warn = 0.0
+        self._pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=camera_encoder_threads_from_env(), thread_name_prefix="camera-png"
+        )
         self._thread = threading.Thread(
-            target=self._loop, name="camera-frame-writer", daemon=True
+            target=self._meta_loop, name="camera-frame-meta", daemon=True
         )
         self._thread.start()
 
@@ -2090,26 +2238,33 @@ class CameraFrameWriter:
         if self._closed:
             self.dropped += 1
             return False
+        if self._max_backlog and self.encode_pending() >= self._max_backlog:
+            self.dropped += 1
+            return False
         self._queue.put((image, sid, slabel, folder, sensor_hfov))
         self.enqueued += 1
         return True
 
     def pending(self) -> int:
-        return self._queue.qsize()
+        return self._queue.qsize() + self.encode_pending()
 
-    def _actors_for_frame(self, frame_id: int) -> list:
+    def encode_pending(self) -> int:
+        with self._encode_lock:
+            return self._encode_pending
+
+    def _actors_for_frame(self, frame_id: int) -> list | None:
         if self._snapshotter.has(frame_id):
             return self._snapshotter.get(frame_id)
         # Camera stream can beat world.on_tick by a few ms. Wait up to one
-        # 20 Hz tick on THIS thread only — never on the listen callback.
+        # 20 Hz tick on THIS thread only, never on the listen callback.
         deadline = time.monotonic() + 0.05
         while time.monotonic() < deadline:
             if self._snapshotter.has(frame_id):
                 return self._snapshotter.get(frame_id)
             time.sleep(0.001)
-        return self._snapshotter.get(frame_id)
+        return None
 
-    def _loop(self) -> None:
+    def _meta_loop(self) -> None:
         while True:
             item = self._queue.get()
             try:
@@ -2127,18 +2282,56 @@ class CameraFrameWriter:
             finally:
                 self._queue.task_done()
 
+    def _submit_encode(self, image, image_path: str) -> None:
+        with self._encode_lock:
+            self._encode_pending += 1
+            backlog = self._encode_pending
+        if backlog and backlog % 200 == 0 and time.monotonic() - self._last_backlog_warn > 10.0:
+            self._last_backlog_warn = time.monotonic()
+            print(
+                f"[capture] camera PNG backlog {backlog} frames (~{2 * backlog} MB held); "
+                "encoding is slower than the tick. Raise DATASET_CAMERA_ENCODER_THREADS, "
+                "lower the camera resolution, or set DATASET_CAMERA_MAX_BACKLOG to drop.",
+                file=sys.stderr,
+                flush=True,
+            )
+        self._pool.submit(self._encode, image, image_path)
+
+    def _encode(self, image, image_path: str) -> None:
+        try:
+            _encode_carla_image_png(image, image_path)
+        except Exception as exc:  # noqa: BLE001
+            self._encode_errors += 1
+            if self._encode_errors <= 3:
+                print(f"[capture] camera PNG encode error: {exc}", file=sys.stderr, flush=True)
+        finally:
+            with self._encode_lock:
+                self._encode_pending -= 1
+
     def _process(self, image, sid, slabel, folder, sensor_hfov) -> None:
         actors = self._actors_for_frame(int(image.frame))
+        if actors is None:
+            self.missing_snapshot += 1
+            if self.missing_snapshot <= 3:
+                print(
+                    f"[capture] camera frame {image.frame}: no actor snapshot for this "
+                    "frame (saving the image with empty actor fields).",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            actors = []
         nearby_actors = get_nearby_actors_in_fov(
             image.transform,
             actors,
             NEARBY_DISTANCE_M,
             sensor_hfov,
         )
-        if not nearby_actors:
-            return
 
-        nearest = nearby_actors[0]
+        image_name = f"frame_{image.frame:08d}.png"
+        image_path = os.path.join(folder, image_name)
+        self._submit_encode(image, image_path)
+
+        nearest = nearby_actors[0] if nearby_actors else None
         nearby_ids = ";".join(str(a["id"]) for a in nearby_actors)
         nearby_kinds = ";".join(a["kind"] for a in nearby_actors)
         nearby_classes = ";".join(a["class_label"] for a in nearby_actors)
@@ -2158,16 +2351,14 @@ class CameraFrameWriter:
                 f"{actor['distance']:.6f}",
             )
 
+        n_id, n_type, n_class, n_dist = _actor_fields(nearest)
+        n_kind = nearest["kind"] if nearest is not None else ""
         nv_id, nv_type, nv_class, nv_dist = _actor_fields(nearest_vehicle)
         np_id, np_type, np_class, np_dist = _actor_fields(nearest_ped)
         veh_ids = ";".join(str(v["id"]) for v in nearby_vehicles)
         veh_classes = ";".join(v["class_label"] for v in nearby_vehicles)
         ped_ids = ";".join(str(p["id"]) for p in nearby_peds)
         ped_classes = ";".join(p["class_label"] for p in nearby_peds)
-
-        image_name = f"frame_{image.frame:08d}.png"
-        image_path = os.path.join(folder, image_name)
-        image.save_to_disk(image_path)
 
         with self._lock:
             if self._camera_file.closed:
@@ -2181,11 +2372,11 @@ class CameraFrameWriter:
                     image.width,
                     image.height,
                     image_path,
-                    nearest["id"],
-                    nearest["kind"],
-                    nearest["type_id"],
-                    nearest["class_label"],
-                    f"{nearest['distance']:.6f}",
+                    n_id,
+                    n_kind,
+                    n_type,
+                    n_class,
+                    n_dist,
                     nearby_ids,
                     nearby_kinds,
                     nearby_classes,
@@ -2222,6 +2413,15 @@ class CameraFrameWriter:
                 f"[capture] camera writer still running after {timeout_s:.0f}s; "
                 "continuing shutdown.",
                 file=sys.stderr,
+                flush=True,
+            )
+        backlog = self.encode_pending()
+        if backlog:
+            print(f"[capture] encoding {backlog} remaining camera PNG(s) ...", flush=True)
+        self._pool.shutdown(wait=True)
+        if self.missing_snapshot:
+            print(
+                f"[capture] camera frames saved without actor metadata: {self.missing_snapshot}",
                 flush=True,
             )
 
@@ -2414,6 +2614,7 @@ def main():
         world,
         run_dir,
         snapshot_fn=make_fast_tick_snapshot_fn(world),
+        max_frames_in_memory=2400,  # 2 min at 20 Hz; the camera meta stage never lags this much
     )
     radar_queue = make_radar_capture_buffer()
     camera_frame_writer = CameraFrameWriter(

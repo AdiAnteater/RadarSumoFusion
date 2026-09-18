@@ -105,6 +105,58 @@ are env-tunable, so you can nudge the rig live in CARLA without editing code:
 | `DATASET_RIG_HEIGHT_M` | per-layout | radar mount height |
 | `DATASET_CAM_HEIGHT_M` | 6.5 | camera height |
 | `DATASET_CAM_END_MARGIN_M` | 16.0 | camera set-back beyond the stretch end |
+| `DATASET_RIG_LOOK_DIR` | east | along-stretch look direction shared by ALL radars (`east` = +heading, the way the camera looks; `west`) |
+| `DATASET_RIG_SKEW_DEG` | 40 | how far each radar is skewed from "straight across the road" toward the look direction (south row yaw = 90-skew, north row = -(90-skew)) |
+| `DATASET_RADAR_PITCH_DEG` | -6 | radar tilt; NEGATIVE = down (CARLA/Unreal: +pitch is nose UP; the old +8 default tilted the radars up into the facades) |
+| `DATASET_RADAR_VERTICAL_FOV_DEG` | 30 | radar elevation FOV (was 60) |
+| `DATASET_CAMERA_ENCODER_THREADS` | 2 | PNG encoder threads for the camera writer |
+| `DATASET_CAMERA_MAX_BACKLOG` | 0 | drop new camera frames once this many wait for encoding (0 = never drop) |
+
+Radar yaws are deterministic now: every radar looks across the boulevard toward the
+far kerb and is skewed along the stretch so all eight share one look direction.
+The former `compute_radar_yaw_toward_road()` pass chose between +40 and -40 by an
+angular-distance comparison that is an exact tie on a straight road, so the side
+was decided by floating-point noise (R5/R6/R8 faced west while the rest faced east
+in the 2026-09-17 captures).
+
+## Radar labeling: what the numbers mean (2026-09-17 diagnosis)
+
+Capture `sensor_capture_20260917_125123` re-analysed against exact OBB geometry
+(every return reconstructed with the true spherical-to-world transform, membership
+tested against the un-inflated CARLA bounding box):
+
+| | old labeler | new labeler |
+|---|---|---|
+| label precision (labeled return really inside the actor OBB) | 63% | 98.5% |
+| recall of true on-body returns | 96% | 100% |
+| QA "matched / with candidates" | 35% (7 m candidate bubble) | 89% (2 m bubble) |
+
+The old 35% was a denominator artifact: 65% of "unmatched with candidates" were
+road-surface returns (z = 0) up to 7 m from a car. The 37% of wrong old labels were
+road returns beside cars admitted by the 0.75 m box inflation, the 1.0 m
+single-candidate margin and the Euler-addition hit reconstruction (wrong once the
+mount pitch is non-zero). Changes: exact reconstruction, inflation 0.2 m, ground
+rejection below the actor's own ground plane, single-candidate margin 0.5 m,
+candidate bubble 2 m, candidate range gate uses CARLA's real ray reach
+(`range * sqrt(1 + tan^2(hfov/2) + tan^2(vfov/2))`, 73 m for 35/120/60, so far-lane
+hits at 35-55 m are no longer dropped).
+
+Every labeled row now also carries `hit_world_{x,y,z}_m` and `return_class`
+(`vehicle | pedestrian | road | structure | unassigned`), and the labeler writes
+`radar_labeling_qa/return_class_summary.{txt,json}`. That breakdown is the
+honest dataset statistic; "match rate given candidates" is only a QA check.
+
+Doppler: CARLA's radar takes the hit actor's PHYSICS velocity, which is exactly 0
+for SUMO-mirrored (physics-off, teleported) vehicles. `PostProcessDataset.py` now
+synthesizes the radial velocity for every matched return from the logged
+trajectory (central difference, projected on the sensor->hit line of sight,
+CARLA sign convention: positive = receding) and keeps the raw value in
+`velocity_raw_mps`. Radar returns on unmatched (static) geometry keep 0.
+
+Camera: the writer is two-stage (metadata + CSV row immediately, PNG encoding on
+a thread pool). The old single thread fell behind on slower machines, outran the
+600-frame snapshot cache and then silently skipped every frame ("41 frames then
+nothing"). Every frame is saved now, with or without actors nearby.
 
 Derived from the net: boulevard runs along +X, x in [-28.7, 26.4] (~55 m),
 carriageways span y in [5.4 .. 36.0], mid ~(-1.0, 20.7). Lower
