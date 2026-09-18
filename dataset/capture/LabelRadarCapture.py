@@ -36,6 +36,7 @@ from capture.CaptureRadarCameraData import (
     actor_rcs_proxy_projected_area_m2,
     evaluate_radar_detection_label,
     labelable_min_speed_from_env,
+    precompute_actor_frame_cache,
     radar_hit_match_max_margin_m_from_env,
     radar_single_candidate_max_margin_m_from_env,
     write_capture_labeling_report,
@@ -249,6 +250,7 @@ def label_radar_capture_dir(
         class_counts: dict[str, int] = {}
         class_counts_by_sensor: dict[str, dict[str, int]] = {}
 
+        cached_frames: set[int] = set()
         for row in reader:
             frame_id = int(row["frame"])
             sensor_label = row["sensor_label"]
@@ -256,6 +258,11 @@ def label_radar_capture_dir(
             if actors is None:
                 missing_frames += 1
                 actors = []
+            elif frame_id not in cached_frames:
+                # Build the per-actor OBB cache once per frame instead of
+                # reconstructing carla.Transform objects for every return.
+                precompute_actor_frame_cache(actors)
+                cached_frames.add(frame_id)
 
             sensor_transform = _transform_from_row(row)
             label = evaluate_radar_detection_label(

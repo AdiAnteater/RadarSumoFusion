@@ -2448,6 +2448,21 @@ def _install_stop_signal_handlers():
         pass
 
 
+def _run_offline_step(name: str, cmd: list) -> bool:
+    """Run a CARLA-free post-capture step as a child process; True on exit 0."""
+    print(f"[capture] {name}: starting as a separate process ...", flush=True)
+    try:
+        code = subprocess.run(cmd, cwd=str(capture_dir().parent)).returncode
+    except Exception as exc:  # noqa: BLE001
+        print(f"[capture] {name} could not start: {exc}", file=sys.stderr, flush=True)
+        return False
+    if code != 0:
+        print(f"[capture] {name} exited with code {code}. Re-run it manually with:\n"
+              f"    {' '.join(str(c) for c in cmd)}", file=sys.stderr, flush=True)
+        return False
+    return True
+
+
 def main():
     _install_stop_signal_handlers()
     client, world = get_world()
@@ -3049,34 +3064,8 @@ def main():
         except Exception as exc:  # noqa: BLE001
             print(f"[capture] (status print failed: {exc})", file=sys.stderr, flush=True)
 
-        if capture_fast and label_after_capture_from_env():
-            try:
-                from capture.LabelRadarCapture import label_radar_capture_dir
-
-                label_radar_capture_dir(run_dir)
-            except Exception as exc:  # noqa: BLE001
-                print(f"Offline radar labeling failed: {exc}", file=sys.stderr, flush=True)
-                traceback.print_exc()
-            else:
-                if postprocess_after_capture_from_env():
-                    try:
-                        from capture.PostProcessDataset import post_process_capture_dir
-
-                        post_process_capture_dir(run_dir, seed=postprocess_seed_from_env())
-                    except Exception as exc:  # noqa: BLE001
-                        print(
-                            f"Post-processing (Doppler/RCS) failed: {exc}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                        traceback.print_exc()
-        elif not capture_fast:
-            write_capture_labeling_report(
-                labeling_collector,
-                run_dir,
-                labelable_min_speed_mps=labelable_min_speed_mps,
-            )
-
+        # Write run_meta BEFORE the (hours-long) offline steps so the capture is
+        # fully recorded even if something below fails.
         write_run_meta(
             run_dir,
             world,
@@ -3084,6 +3073,31 @@ def main():
             camera_count=len(camera_sensors),
             phase="stop",
         )
+
+        if capture_fast and label_after_capture_from_env():
+            # Run labeling + post-processing in a FRESH interpreter, never in this
+            # process. Neither needs CARLA, but this process still owns a live
+            # libcarla client; when the simulator is closed or crashes while a
+            # 3-hour labeling pass is running, libcarla's threads fail-fast and
+            # take the whole process down (Windows exit 0xC0000409, capture
+            # 20260917_215125 died at 65% of labeling). A subprocess is immune.
+            label_ok = _run_offline_step(
+                "Offline radar labeling",
+                [sys.executable, str(capture_dir() / "LabelRadarCapture.py"),
+                 "--capture-dir", run_dir],
+            )
+            if label_ok and postprocess_after_capture_from_env():
+                _run_offline_step(
+                    "Post-processing (Doppler/RCS)",
+                    [sys.executable, str(capture_dir() / "PostProcessDataset.py"),
+                     "--capture-dir", run_dir, "--seed", str(postprocess_seed_from_env())],
+                )
+        elif not capture_fast:
+            write_capture_labeling_report(
+                labeling_collector,
+                run_dir,
+                labelable_min_speed_mps=labelable_min_speed_mps,
+            )
 
         print("Recording stopped.")
         print(f"Radar file: {radar_csv}")
