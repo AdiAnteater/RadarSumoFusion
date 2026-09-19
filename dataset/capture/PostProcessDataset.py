@@ -3,8 +3,11 @@
 Transforms applied in-order to radar_data_labeled.csv:
 
 1. Pedestrian Doppler fix.
-   CARLA's walker controller returns zero velocity; fix by central-differencing
-   actor_frames.jsonl positions and projecting onto sensor line-of-sight.
+   CARLA's walker controller returns zero velocity. Estimate one rigid-body
+   world velocity per (frame, walker) from actor_frames.jsonl (short central
+   difference, one-sided at edges), project onto each ping's detection ray
+   (azimuth/altitude, CARLA radar convention), and add an optional torso
+   residual drawn once per actor-frame — not per ping.
 
 2. RCS dBsm calibration + realism.
    rcs_proxy_m2 (geometric OBB area) -> rcs_dBsm with:
@@ -121,8 +124,12 @@ DEFAULT_ASPECT_AMPLITUDE_DB = {
     "motorcycle":  5.0,
 }
 
-DEFAULT_MICRO_DOPPLER_SIGMA = 1.0
-DEFAULT_FD_STRIDE = 10
+# Torso residual (m/s), one Gaussian draw per (actor, frame) shared by every
+# ping on that person. 0 disables. Keep small so Doppler is not a class leak;
+# FMCW CRLB noise is applied later on velocity_mps_noisy.
+DEFAULT_MICRO_DOPPLER_SIGMA = 0.25
+# Central-difference half-window in world ticks. At 20 Hz, 2 ticks => 0.2 s.
+DEFAULT_FD_STRIDE = 2
 DEFAULT_MAX_WALKER_SPEED_MPS = 3.0
 
 # Static/clutter RCS — sampled from the RadarScenes static class (label 11) distribution
@@ -203,6 +210,100 @@ def load_walker_positions(frames_path: Path) -> dict:
                     float(loc["z"]),
                 )
     return walker_pos
+
+
+def estimate_walker_world_velocities(
+    walker_pos: dict,
+    dt_mean: float,
+    fd_stride: int,
+    max_speed: float,
+) -> tuple[dict, dict]:
+    """One world-frame velocity per (frame, walker) from logged positions.
+
+    Prefers a central difference at ±fd_stride ticks. If a neighbor is missing
+    (capture edges, dropped actor frames), uses a one-sided difference on the
+    available side, then ±1 tick. Isolated single-frame walkers are omitted.
+    Speeds above max_speed are clamped (direction preserved).
+    """
+    fd = max(1, int(fd_stride))
+    dt_mean = max(float(dt_mean), 1e-6)
+    by_actor: dict = defaultdict(dict)
+    for (frame, aid), pos in walker_pos.items():
+        by_actor[int(aid)][int(frame)] = pos
+
+    velocities: dict = {}
+    n_central = n_onesided = n_clamped = 0
+    for aid, fmap in by_actor.items():
+        for f, p_now in fmap.items():
+            p_prev = fmap.get(f - fd)
+            p_next = fmap.get(f + fd)
+            pa = pb = None
+            dt = 0.0
+            kind = ""
+            if p_prev is not None and p_next is not None:
+                pa, pb, dt, kind = p_prev, p_next, 2.0 * fd * dt_mean, "central"
+            elif p_next is not None:
+                pa, pb, dt, kind = p_now, p_next, float(fd) * dt_mean, "forward"
+            elif p_prev is not None:
+                pa, pb, dt, kind = p_prev, p_now, float(fd) * dt_mean, "backward"
+            else:
+                p_m1 = fmap.get(f - 1)
+                p_p1 = fmap.get(f + 1)
+                if p_m1 is not None and p_p1 is not None:
+                    pa, pb, dt, kind = p_m1, p_p1, 2.0 * dt_mean, "central"
+                elif p_p1 is not None:
+                    pa, pb, dt, kind = p_now, p_p1, dt_mean, "forward"
+                elif p_m1 is not None:
+                    pa, pb, dt, kind = p_m1, p_now, dt_mean, "backward"
+                else:
+                    continue
+            if dt <= 1e-9 or pa is None or pb is None:
+                continue
+            vx = (pb[0] - pa[0]) / dt
+            vy = (pb[1] - pa[1]) / dt
+            vz = (pb[2] - pa[2]) / dt
+            spd = math.sqrt(vx * vx + vy * vy + vz * vz)
+            if spd > max_speed:
+                scale = max_speed / spd
+                vx *= scale
+                vy *= scale
+                vz *= scale
+                n_clamped += 1
+            velocities[(f, aid)] = (vx, vy, vz)
+            if kind == "central":
+                n_central += 1
+            else:
+                n_onesided += 1
+    return velocities, {
+        "n_central": n_central,
+        "n_onesided": n_onesided,
+        "n_clamped": n_clamped,
+        "n_total": len(velocities),
+    }
+
+
+def _detection_ray_world_unit(
+    azimuth_rad: float,
+    altitude_rad: float,
+    sensor_pitch_deg: float,
+    sensor_yaw_deg: float,
+) -> tuple[float, float, float] | None:
+    """Outgoing unit ray in world frame (CARLA radar azimuth/altitude convention).
+
+    Matches CaptureRadarCameraData.radar_detection_world_location: altitude is
+    added to sensor pitch, azimuth to sensor yaw, then +X (sensor forward) is
+    rotated into the world. Positive Doppler = receding along this ray.
+    """
+    pitch = math.radians(sensor_pitch_deg) + altitude_rad
+    yaw = math.radians(sensor_yaw_deg) + azimuth_rad
+    cp = math.cos(pitch)
+    ux = math.cos(yaw) * cp
+    uy = math.sin(yaw) * cp
+    uz = -math.sin(pitch)
+    n = math.sqrt(ux * ux + uy * uy + uz * uz)
+    if n < 1e-9:
+        return None
+    return (ux / n, uy / n, uz / n)
 
 
 def load_actor_transforms(frames_path: Path) -> dict:
@@ -472,6 +573,30 @@ def post_process_capture_dir(
     print(f"      dt ~ {dt_mean * 1000:.2f} ms  (~{1.0/max(dt_mean, 1e-9):.0f} Hz)",
           flush=True)
 
+    max_walker_speed = max(0.1, float(max_walker_speed))
+    fd_stride = max(1, int(fd_stride))
+    walker_vel: dict = {}
+    walker_vel_info = {
+        "n_central": 0, "n_onesided": 0, "n_clamped": 0, "n_total": 0,
+    }
+    if walker_pos:
+        walker_vel, walker_vel_info = estimate_walker_world_velocities(
+            walker_pos, dt_mean, fd_stride, max_walker_speed,
+        )
+        window_s = 2.0 * fd_stride * dt_mean
+        print(
+            f"      walker v: {walker_vel_info['n_total']:,} (frame, actor)  "
+            f"central={walker_vel_info['n_central']:,}  "
+            f"one-sided={walker_vel_info['n_onesided']:,}  "
+            f"clamped={walker_vel_info['n_clamped']:,}",
+            flush=True,
+        )
+        print(
+            f"      fd_stride={fd_stride} ticks (~{window_s * 1000:.0f} ms window)  "
+            f"micro-Doppler σ={micro_doppler_sigma:.2f} m/s (per actor-frame)",
+            flush=True,
+        )
+
     # ------------------------------------------------------------------ [3/4]
     print("[3/4] Calibrating RCS dBsm offsets ...", flush=True)
     offsets, info = class_offsets_from_data(labeled, DEFAULT_TARGET_MEDIAN_DBSM)
@@ -520,10 +645,10 @@ def post_process_capture_dir(
     print(f"\n[4/4] Rewriting {out.name} ...", flush=True)
 
     rng = random.Random(seed)
-    fd  = fd_stride
 
     actor_offset_cache: dict = {}
     frame_offset_cache: dict = {}
+    micro_doppler_cache: dict = {}
 
     def _actor_offset(klass: str, actor_id: int) -> float:
         """Persistent Gaussian offset representing inter-individual RCS variation."""
@@ -563,13 +688,24 @@ def post_process_capture_dir(
             static_rcs_cache[key] = static_rcs_inverse_cdf(u)
         return static_rcs_cache[key]
 
+    def _micro_doppler(actor_id: int, frame_id: int) -> float:
+        """One torso residual per (walker, frame); shared by every ping on them."""
+        if micro_doppler_sigma <= 0:
+            return 0.0
+        key = (actor_id, frame_id)
+        if key not in micro_doppler_cache:
+            micro_doppler_cache[key] = random.Random(
+                f"{seed}|micro|{actor_id}|{frame_id}"
+            ).gauss(0.0, micro_doppler_sigma)
+        return micro_doppler_cache[key]
+
     stats = {
-        "walker_fixed": 0, "walker_skipped": 0, "walker_clamped": 0,
+        "walker_fixed": 0, "walker_skipped": 0,
+        "walker_clamped": walker_vel_info["n_clamped"],
         "rcs_written": 0, "static_rcs": 0, "spikes": 0,
         "snr_written": 0, "visible_1": 0,
         "invis_range": 0, "invis_vel": 0, "invis_snr": 0,
     }
-    max_walker_speed = max(0.1, float(max_walker_speed))
 
     FMCW_COLS = ["snr_dB", "visible",
                  "depth_m_noisy", "velocity_mps_noisy", "azimuth_rad_noisy"]
@@ -596,49 +732,46 @@ def post_process_capture_dir(
                 frame_id = int(row["frame"])
 
                 # --------------------------------------------------------
-                # [A] Pedestrian velocity fix (bulk + micro-Doppler)
+                # [A] Pedestrian velocity fix (rigid-body v · detection ray)
                 # --------------------------------------------------------
                 if aid_raw and kind == "pedestrian":
                     try:
                         aid = int(aid_raw)
                     except ValueError:
                         aid = None
-                    if aid is not None:
-                        p_prev = walker_pos.get((frame_id - fd, aid))
-                        p_next = walker_pos.get((frame_id + fd, aid))
-                        p_now  = walker_pos.get((frame_id, aid))
-                        if p_prev and p_next and p_now:
-                            dt  = 2.0 * fd * dt_mean
-                            vx  = (p_next[0] - p_prev[0]) / dt
-                            vy  = (p_next[1] - p_prev[1]) / dt
-                            vz  = (p_next[2] - p_prev[2]) / dt
-                            spd = math.sqrt(vx*vx + vy*vy + vz*vz)
-                            if spd > max_walker_speed:
-                                scale = max_walker_speed / spd
-                                vx *= scale
-                                vy *= scale
-                                vz *= scale
-                                stats["walker_clamped"] += 1
-                            sx = float(row["sensor_world_x_m"])
-                            sy = float(row["sensor_world_y_m"])
-                            sz = float(row["sensor_world_z_m"])
-                            ux = p_now[0] - sx
-                            uy = p_now[1] - sy
-                            uz = p_now[2] - sz
-                            n  = math.sqrt(ux*ux + uy*uy + uz*uz)
-                            if n > 1e-6:
-                                ux /= n
-                                uy /= n
-                                uz /= n
-                                v_rad = vx*ux + vy*uy + vz*uz
-                                if micro_doppler_sigma > 0:
-                                    v_rad += rng.gauss(0.0, micro_doppler_sigma)
-                                row["velocity_mps"] = f"{v_rad:.6f}"
-                                stats["walker_fixed"] += 1
-                            else:
-                                stats["walker_skipped"] += 1
-                        else:
+                    vel = walker_vel.get((frame_id, aid)) if aid is not None else None
+                    if aid is None or vel is None:
+                        stats["walker_skipped"] += 1
+                    else:
+                        ray = None
+                        try:
+                            ray = _detection_ray_world_unit(
+                                float(row["azimuth_rad"]),
+                                float(row["altitude_rad"]),
+                                float(row["sensor_pitch_deg"]),
+                                float(row["sensor_yaw_deg"]),
+                            )
+                        except (KeyError, ValueError, TypeError):
+                            ray = None
+                        if ray is None:
+                            p_now = walker_pos.get((frame_id, aid))
+                            if p_now is not None:
+                                try:
+                                    ux = p_now[0] - float(row["sensor_world_x_m"])
+                                    uy = p_now[1] - float(row["sensor_world_y_m"])
+                                    uz = p_now[2] - float(row["sensor_world_z_m"])
+                                    n = math.sqrt(ux * ux + uy * uy + uz * uz)
+                                    if n > 1e-6:
+                                        ray = (ux / n, uy / n, uz / n)
+                                except (KeyError, ValueError, TypeError):
+                                    ray = None
+                        if ray is None:
                             stats["walker_skipped"] += 1
+                        else:
+                            v_rad = vel[0] * ray[0] + vel[1] * ray[1] + vel[2] * ray[2]
+                            v_rad += _micro_doppler(aid, frame_id)
+                            row["velocity_mps"] = f"{v_rad:.6f}"
+                            stats["walker_fixed"] += 1
 
                 # --------------------------------------------------------
                 # [B] RCS dBsm calibration + realism
@@ -792,9 +925,10 @@ def post_process_capture_dir(
     print(f"  Walker velocities fixed     : {stats['walker_fixed']:,}", flush=True)
     print(f"  Walker rows skipped         : {stats['walker_skipped']:,}", flush=True)
     if stats["walker_clamped"]:
-        pct = 100.0 * stats["walker_clamped"] / max(stats["walker_fixed"], 1)
+        pct = 100.0 * stats["walker_clamped"] / max(walker_vel_info["n_total"], 1)
         print(f"  Walker speeds clamped       : {stats['walker_clamped']:,} "
-              f"({pct:.2f}% above {max_walker_speed:.1f} m/s)", flush=True)
+              f"({pct:.2f}% of (frame, actor) estimates above "
+              f"{max_walker_speed:.1f} m/s)", flush=True)
     print(f"  rcs_dBsm cells written      : {stats['rcs_written']:,}", flush=True)
     print(f"  static rcs_dBsm (RadarScenes): {stats['static_rcs']:,} "
           f"({len(static_rcs_cache):,} reflector voxels)", flush=True)
@@ -832,10 +966,13 @@ def main() -> None:
     # -- pedestrian Doppler fix --
     p.add_argument("--micro-doppler-sigma", type=float,
                    default=DEFAULT_MICRO_DOPPLER_SIGMA,
-                   help="Gaussian stddev (m/s) added to bulk pedestrian Doppler. "
-                        "0 disables.")
+                   help="Gaussian stddev (m/s) of a torso residual drawn once "
+                        "per (walker, frame) and shared by every ping on that "
+                        "person. 0 disables.")
     p.add_argument("--fd-stride", type=int, default=DEFAULT_FD_STRIDE,
-                   help="Central-difference stride in world ticks for walker velocity.")
+                   help="Central-difference half-window in world ticks for "
+                        "walker velocity (default 2 ≈ 0.2 s at 20 Hz). "
+                        "Edges use a one-sided difference.")
     p.add_argument("--max-walker-speed", type=float,
                    default=DEFAULT_MAX_WALKER_SPEED_MPS,
                    help="Hard ceiling on bulk walker speed (m/s).")
