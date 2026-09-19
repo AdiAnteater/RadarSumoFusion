@@ -584,11 +584,17 @@ def write_csv_tables(
                 }
             )
 
+        per_sensor_frames: Counter[str] = Counter()
+        for sensors in collector._frame_sensors.values():
+            for s in sensors:
+                per_sensor_frames[s] += 1
+
         sensor_rows = []
         for label in sorted(collector.by_sensor):
             b = collector.by_sensor[label]
             det = b["detections"]
             wc = det - b["no_candidates"]
+            nf = per_sensor_frames.get(label, 0)
             sensor_rows.append(
                 {
                     "sensor_label": label,
@@ -604,6 +610,19 @@ def write_csv_tables(
                     "no_candidates": b["no_candidates"],
                     "failed_match": b["failed_match"],
                     "static_skipped": b.get("static_skipped", 0),
+                    "frames": nf,
+                    "density_all": round(det / nf, 4) if nf else 0.0,
+                    "density_matched": round(b["matched"] / nf, 4) if nf else 0.0,
+                    "density_vehicle": round(
+                        collector.matched_vehicle_by_sensor.get(label, 0) / nf, 4
+                    )
+                    if nf
+                    else 0.0,
+                    "density_pedestrian": round(
+                        collector.matched_pedestrian_by_sensor.get(label, 0) / nf, 4
+                    )
+                    if nf
+                    else 0.0,
                 }
             )
 

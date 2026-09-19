@@ -212,18 +212,61 @@ def load_walker_positions(frames_path: Path) -> dict:
     return walker_pos
 
 
+def load_actor_positions(frames_path: Path) -> dict:
+    """Load every actor pose + identity from actor_frames.jsonl.
+
+    Returns a dict with:
+      positions: {(frame_id, actor_id): (x, y, z)}
+      kind: {actor_id: "vehicle"|"pedestrian"|...}
+      class_label: {actor_id: "car"|"pedestrian"|...}
+      frames: set of frame ids present in the log
+      ids_by_kind: {kind: set[actor_id]}
+    """
+    positions: dict = {}
+    kind: dict = {}
+    class_label: dict = {}
+    frames: set = set()
+    ids_by_kind: dict = defaultdict(set)
+    with frames_path.open(encoding="utf-8") as f:
+        for line in f:
+            rec = json.loads(line)
+            frame = int(rec["frame"])
+            frames.add(frame)
+            for a in rec.get("actors", []):
+                aid = int(a["id"])
+                loc = a.get("location") or {}
+                positions[(frame, aid)] = (
+                    float(loc.get("x", 0.0)),
+                    float(loc.get("y", 0.0)),
+                    float(loc.get("z", 0.0)),
+                )
+                k = str(a.get("kind") or "")
+                kind[aid] = k
+                class_label[aid] = str(a.get("class_label") or "")
+                if k:
+                    ids_by_kind[k].add(aid)
+    return {
+        "positions": positions,
+        "kind": kind,
+        "class_label": class_label,
+        "frames": frames,
+        "ids_by_kind": dict(ids_by_kind),
+    }
+
+
 def estimate_walker_world_velocities(
     walker_pos: dict,
     dt_mean: float,
     fd_stride: int,
     max_speed: float,
 ) -> tuple[dict, dict]:
-    """One world-frame velocity per (frame, walker) from logged positions.
+    """One world-frame velocity per (frame, actor) from logged positions.
 
-    Prefers a central difference at ±fd_stride ticks. If a neighbor is missing
-    (capture edges, dropped actor frames), uses a one-sided difference on the
-    available side, then ±1 tick. Isolated single-frame walkers are omitted.
-    Speeds above max_speed are clamped (direction preserved).
+    Works for any actor-position dict, not only walkers. Prefers a central
+    difference at ±fd_stride ticks. If a neighbor is missing (capture edges,
+    dropped actor frames), uses a one-sided difference on the available side,
+    then ±1 tick. Isolated single-frame actors are omitted. Speeds above
+    max_speed are clamped (direction preserved).
     """
     fd = max(1, int(fd_stride))
     dt_mean = max(float(dt_mean), 1e-6)
@@ -947,6 +990,16 @@ def post_process_capture_dir(
         print(f"  invisible (SNR / P_d)       : {stats['invis_snr']:,}", flush=True)
 
     print(f"Done -> {out}", flush=True)
+    if capture_dir is not None:
+        try:
+            from tools.DatasetQualityReport import write_capture_quality_report
+
+            write_capture_quality_report(
+                Path(capture_dir),
+                csv_path=Path(out),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Quality report failed: {exc}", file=sys.stderr, flush=True)
     return out
 
 

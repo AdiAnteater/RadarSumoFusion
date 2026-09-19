@@ -1763,6 +1763,17 @@ def write_capture_labeling_report(
         traceback.print_exc()
 
 
+def write_capture_quality_report_safe(run_dir: str) -> None:
+    """Offline quality/sanity pass into radar_labeling_qa/. Never raises."""
+    try:
+        from tools.DatasetQualityReport import write_capture_quality_report
+
+        write_capture_quality_report(Path(os.path.normpath(run_dir)))
+    except Exception as exc:  # noqa: BLE001
+        print(f"Quality report failed: {exc}", file=sys.stderr, flush=True)
+        traceback.print_exc()
+
+
 def _run_dataset_extrinsic_exports(world, run_dir: str) -> None:
     """
     After CSVs are closed, write camera_extrinsics.* and sensor_extrinsics.* into run_dir.
@@ -2857,11 +2868,13 @@ def main():
                 print(f"Offline radar labeling failed: {exc}", file=sys.stderr, flush=True)
                 traceback.print_exc()
             else:
+                postprocessed = False
                 if postprocess_after_capture_from_env():
                     try:
                         from capture.PostProcessDataset import post_process_capture_dir
 
                         post_process_capture_dir(run_dir, seed=postprocess_seed_from_env())
+                        postprocessed = True
                     except Exception as exc:  # noqa: BLE001
                         print(
                             f"Post-processing (Doppler/RCS) failed: {exc}",
@@ -2869,12 +2882,15 @@ def main():
                             flush=True,
                         )
                         traceback.print_exc()
+                if not postprocessed:
+                    write_capture_quality_report_safe(run_dir)
         elif not capture_fast:
             write_capture_labeling_report(
                 labeling_collector,
                 run_dir,
                 labelable_min_speed_mps=labelable_min_speed_mps,
             )
+            write_capture_quality_report_safe(run_dir)
 
         write_run_meta(
             run_dir,
