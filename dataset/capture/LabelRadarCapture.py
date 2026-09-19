@@ -401,7 +401,7 @@ def main() -> int:
         "--auto-margin",
         action="store_true",
         help="Derive the hit-match margin from this capture's own margin distribution "
-        "(sets DATASET_RADAR_AUTO_MARGIN=1) instead of the fixed 0.5/1.0 m defaults.",
+        "(sets DATASET_RADAR_AUTO_MARGIN=1) instead of the fixed 0.25/0.25 m defaults.",
     )
     parser.add_argument(
         "--auto-margin-stride",

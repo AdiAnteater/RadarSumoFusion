@@ -69,22 +69,28 @@ RADAR_VEHICLE_PROXIMITY_M = RADAR_ACTOR_PROXIMITY_M
 # Inflate each actor OBB extent when computing margin (m per axis).
 BBOX_MATCH_EXTENT_INFLATION_M = 0.75
 # Max distance from hit to OBB surface for a primary match (m).
-# Default 0.5 m: derived from the uncensored nearest-margin distribution of a real
-# capture (tools/derive_match_threshold_uncensored.py). Genuine ray hits land ON
-# the actor OBB, so they pile into a spike at margin ~0 (here ~12% of candidate
+# Default 0.25 m: cut just past the on-body spike in the uncensored nearest-margin
+# distribution (tools/derive_match_threshold_uncensored.py). Genuine ray hits land
+# ON the actor OBB, so they pile into a spike at margin ~0 (here ~12% of candidate
 # returns, all within the 0.75 m inflation). Past a trough at ~0.2 m the histogram
 # is a monotonically RISING road/structure-clutter ramp with no second lobe and no
 # valley — i.e. raising the threshold buys ~zero extra on-body returns and only
-# admits clutter. Precision (on-body / accepted) on that capture: 0.5 m -> 87%,
-# 1.5 m -> 53%, 2.0 m -> 42%. 0.5 m keeps a little slack for bbox-underfit / pose
-# jitter; drop toward 0.25 m for max precision (~96%). The trough shifts with pps,
-# so re-derive per capture: the QA report (radar_labeling_summary.png) now plots the
-# spike/trough/precision curve, or set DATASET_RADAR_AUTO_MARGIN=1 to derive+apply it
-# automatically. Override the constant via DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M
-# (clamped 0.5–25 m).
-RADAR_HIT_MATCH_MAX_MARGIN_M = 0.5
-# Looser margin when exactly one actor is in the depth/azimuth gate.
-RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M = 1.0
+# admits clutter. Precision (on-body / accepted) on that capture: 0.25 m -> ~96%,
+# 0.5 m -> 87%, 1.5 m -> 53%, 2.0 m -> 42%. 0.25 m keeps a little slack past the
+# trough for bbox-underfit / pose jitter. The trough shifts with pps, so re-derive
+# per capture: the QA report (radar_labeling_summary.png) plots the
+# spike/trough/precision curve, or set DATASET_RADAR_AUTO_MARGIN=1 to derive+apply
+# it automatically. Override via DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M
+# (clamped 0.15–25 m).
+RADAR_HIT_MATCH_MAX_MARGIN_M = 0.25
+# Same cut when exactly one actor is in the depth/azimuth gate. A looser
+# single-candidate fallback (previously 1.0 m) labeled pavement around isolated
+# vehicles; keep it equal to the primary cut so that path is not an FP leak.
+RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M = 0.25
+# Env / auto-margin clamp. Floor is the spike-edge so AUTO_MARGIN can sit at the
+# trough (~0.2 m); the 0.25 m defaults add a little slack above that.
+RADAR_HIT_MATCH_MARGIN_FLOOR_M = 0.15
+RADAR_HIT_MATCH_MARGIN_CEIL_M = 25.0
 # Backward-compatible alias for reports / CLI (near-surface threshold, not extent inflation).
 RADAR_HIT_MATCH_MAX_DISTANCE_M = RADAR_HIT_MATCH_MAX_MARGIN_M
 # Min |radial velocity| (m/s) to score a return. Default 0 includes parked/stalled actors.
@@ -652,23 +658,29 @@ def radar_candidate_hit_max_bbox_margin_m() -> float | None:
 
 def radar_hit_match_max_margin_m_from_env() -> float:
     """Override the primary hit-to-OBB acceptance margin via
-    ``DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M``. Clamped to [0.5, 25.0] m."""
+    ``DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M``. Clamped to [0.15, 25.0] m."""
     raw = os.environ.get("DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M", "").strip()
     if raw:
         try:
-            return max(0.5, min(float(raw), 25.0))
+            return max(
+                RADAR_HIT_MATCH_MARGIN_FLOOR_M,
+                min(float(raw), RADAR_HIT_MATCH_MARGIN_CEIL_M),
+            )
         except ValueError:
             pass
     return RADAR_HIT_MATCH_MAX_MARGIN_M
 
 
 def radar_single_candidate_max_margin_m_from_env() -> float:
-    """Override the looser single-candidate fallback margin via
-    ``DATASET_RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M``. Clamped to [0.5, 25.0] m."""
+    """Override the single-candidate fallback margin via
+    ``DATASET_RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M``. Clamped to [0.15, 25.0] m."""
     raw = os.environ.get("DATASET_RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M", "").strip()
     if raw:
         try:
-            return max(0.5, min(float(raw), 25.0))
+            return max(
+                RADAR_HIT_MATCH_MARGIN_FLOOR_M,
+                min(float(raw), RADAR_HIT_MATCH_MARGIN_CEIL_M),
+            )
         except ValueError:
             pass
     return RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M

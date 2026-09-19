@@ -30,8 +30,8 @@ BUSIEST_FRAME_POINT_CAP = 25000
 MARGIN_BIN_M = 0.05
 MARGIN_MAX_M = 7.0
 MARGIN_N_BINS = int(round(MARGIN_MAX_M / MARGIN_BIN_M))
-# Env clamp shared with DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M.
-MARGIN_FLOOR_M = 0.5
+# Env clamp shared with DATASET_RADAR_HIT_MATCH_MAX_MARGIN_M (spike-edge floor).
+MARGIN_FLOOR_M = 0.15
 MARGIN_CEIL_M = 25.0
 
 
@@ -62,8 +62,8 @@ def derive_margin_threshold(
     merely shares the beam forms a monotonically rising ramp with no far lobe. The
     only natural cut is the trough just past the spike. Returns spike/trough stats,
     a precision (= spike / accepted) table, and suggested primary + single-candidate
-    margins (trough, floored at floor_m, so the value only moves UP for captures
-    whose clutter encroaches closer — e.g. sparse pps / high speed).
+    margins (trough, floored at floor_m). Single-candidate uses the same cut as
+    primary; a 2x fallback re-admits the clutter ramp around isolated actors.
     """
     hist = np.asarray(hist, dtype=np.float64)
     centers = margin_bin_centers()
@@ -108,7 +108,7 @@ def derive_margin_threshold(
         out["trough_count"] = int(hist[ti])
         primary = min(max(trough, floor_m), ceil_m)
         out["suggested_primary_m"] = round(primary, 2)
-        out["suggested_single_m"] = round(min(max(primary * 2.0, floor_m), ceil_m), 2)
+        out["suggested_single_m"] = round(primary, 2)
     return out
 
 
