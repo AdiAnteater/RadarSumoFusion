@@ -165,9 +165,22 @@ BIKE_VTYPES = {"amb_bike", "bike", "bicycle"}
 
 # Pedestrian mirroring.
 WALKER_FILTER = "walker.pedestrian.*"
-# Walkers stand on the sidewalk; their origin is at the feet, so only a small
-# clearance is needed above the resolved ground surface.
-PED_GROUND_CLEARANCE = 0.5
+# A CARLA walker's transform is at the CENTRE of its capsule, not at the feet
+# (bounding_box.location is (0,0,0) and bounding_box.extent.z is the half
+# height: 0.93 m for adults, 0.55-0.65 m for children). The old fixed 0.5 m
+# "clearance" therefore put an adult's feet 0.43 m below the pavement and a
+# child's 0.05 m below it -- the "pedestrians buried in the ground" report.
+# Walkers are now placed at surface + their own bounding_box.extent.z + this
+# small epsilon; the extent is read from the spawned actor and cached per id.
+PED_GROUND_CLEARANCE = 0.03
+PED_DEFAULT_HALF_HEIGHT = 0.93   # used for the very first (pre-spawn) transform
+
+# ground_projection() reports what it hit. Only accept ground-like labels; a
+# ray that lands on a car roof, a bus-shelter, another walker or a prop would
+# otherwise be cached as the pavement height and every walker crossing that
+# cell would pop up onto the roof (the "janky near cars" report).
+PED_GROUND_LABELS = {"Roads", "Sidewalks", "Ground", "RoadLines", "Terrain",
+                     "Bridge", "RailTrack", "NONE"}
 
 # Refine walker ground height with a real downward raycast against the mesh
 # (world.ground_projection) instead of trusting the OpenDRIVE sidewalk lane
@@ -204,7 +217,11 @@ def _ped_snap_max_m():
             return max(0.0, float(raw))
         except ValueError:
             pass
-    return 6.0
+    # 3 m (was 6): a walker stepping off the kerb onto a crossing is no longer
+    # dragged 6 m sideways back onto the pavement. Walkers that SUMO reports on
+    # a crossing or walkingarea lane are never snapped at all (see
+    # _person_transform), so this only affects sidewalk lanes.
+    return 3.0
 
 PED_SNAP_MAX_M = _ped_snap_max_m()
 
@@ -270,6 +287,7 @@ class CarlaSyncManager:
         self._far_wp_warned    = False
         self._ped_z_logged     = False
         self._ped_ground_cache = {}
+        self._ped_half_height  = {}   # pid -> bounding_box.extent.z of its walker
         self._veh_ground_cache = {}   # grid cell -> ground z (vehicle Z cache)
         self._ped_snap_cache   = {}   # grid cell -> (x, y, z) snapped ped pose
         self._spawn_count   = 0
@@ -799,20 +817,27 @@ class CarlaSyncManager:
         if base is None:
             base = FALLBACK_Z
 
+        cacheable = True
         if USE_GROUND_PROJECTION:
             try:
                 hit = self._world.ground_projection(
                     carla.Location(x=cx, y=cy, z=base + 2.0), 6.0)
                 if hit is not None:
-                    if not self._ped_z_logged:
-                        self._ped_z_logged = True
-                        print(f"[CarlaSyncManager] Pedestrian ground: lane "
-                              f"elevation z={base:.3f}, raycast to mesh "
-                              f"z={hit.location.z:.3f} (delta "
-                              f"{hit.location.z - base:+.3f} m). Walkers are "
-                              f"placed on the raycast surface + "
-                              f"{PED_GROUND_CLEARANCE:.2f} m.")
-                    base = hit.location.z
+                    label = str(getattr(hit, "label", "Any")).split(".")[-1]
+                    if label in PED_GROUND_LABELS and abs(hit.location.z - base) <= 1.0:
+                        if not self._ped_z_logged:
+                            self._ped_z_logged = True
+                            print(f"[CarlaSyncManager] Pedestrian ground: lane "
+                                  f"elevation z={base:.3f}, raycast to mesh "
+                                  f"z={hit.location.z:.3f} ({label}, delta "
+                                  f"{hit.location.z - base:+.3f} m). Walkers are "
+                                  f"placed with their feet on the raycast surface.")
+                        base = hit.location.z
+                    else:
+                        # Hit a vehicle / prop / walker: use the lane elevation
+                        # and do not cache, so the cell is re-probed once the
+                        # obstacle has moved on.
+                        cacheable = False
             except Exception as e:
                 if not self._ped_z_logged:
                     self._ped_z_logged = True
@@ -821,7 +846,8 @@ class CarlaSyncManager:
                           f"elevation for walker height.")
 
         z = base + PED_GROUND_CLEARANCE
-        self._ped_ground_cache[key] = z
+        if cacheable:
+            self._ped_ground_cache[key] = z
         return z
 
     def _person_transform(self, pid: str) -> carla.Transform:
@@ -835,9 +861,19 @@ class CarlaSyncManager:
         x, y = traci.person.getPosition(pid)
         heading = traci.person.getAngle(pid)
         cx, cy, yaw = sumo_to_carla_xy_yaw(x, y, heading)
-        sx, sy = self._snap_to_sidewalk(cx, cy)
+        # On a crossing (":<node>_c<i>_0") or walkingarea (":<node>_w<i>_0")
+        # the walker is deliberately off the sidewalk: keep SUMO's position.
+        # Snapping there is what made walkers jump back and forth at the kerb
+        # in front of waiting cars.
+        try:
+            lane = traci.person.getLaneID(pid)
+        except traci.TraCIException:
+            lane = ""
+        off_sidewalk = lane.startswith(":") and ("_c" in lane or "_w" in lane)
+        sx, sy = (cx, cy) if off_sidewalk else self._snap_to_sidewalk(cx, cy)
+        half = self._ped_half_height.get(pid, PED_DEFAULT_HALF_HEIGHT)
         return carla.Transform(
-            carla.Location(x=sx, y=sy, z=self._pedestrian_ground_z(sx, sy)),
+            carla.Location(x=sx, y=sy, z=self._pedestrian_ground_z(sx, sy) + half),
             carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0),
         )
 
@@ -896,6 +932,13 @@ class CarlaSyncManager:
                 actor.set_simulate_physics(False)
                 self._ped_actors[pid] = actor
                 self._spawn_count += 1
+                try:
+                    self._ped_half_height[pid] = float(actor.bounding_box.extent.z)
+                except Exception:  # noqa: BLE001
+                    self._ped_half_height[pid] = PED_DEFAULT_HALF_HEIGHT
+                # Re-place immediately with the real half height (the spawn
+                # attempt used the default and possibly an extra_z lift).
+                actor.set_transform(self._person_transform(pid))
         except Exception as e:
             print(f"[CarlaSyncManager] Person spawn error for {pid}: {e}")
 
@@ -912,3 +955,4 @@ class CarlaSyncManager:
         except Exception:
             pass
         self._ped_actors.pop(pid, None)
+        self._ped_half_height.pop(pid, None)

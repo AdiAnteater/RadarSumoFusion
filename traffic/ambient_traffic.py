@@ -66,6 +66,36 @@ MONITORED_EDGES = {"20", "-20"}
 WB_ROUTE_EDGES = "-1 -2 21 20 19 18 5"
 EB_ROUTE_EDGES = "-5 -18 -19 -20 -21 2 1"
 
+# Second exit per direction, so BOTH driving lanes of the stretch are through
+# lanes. Lane connectivity after the stretch (from the net):
+#     WB  18_4 -> 5      18_3 -> -6        EB  -21_3 -> 2     -21_4 -> -3
+# With a single exit route every WB vehicle had to be in lane 4 within 19 m
+# of leaving the stretch and every EB vehicle in lane 3 within 25 m, so SUMO's
+# strategic lane changing pulled everything into one lane ON the stretch and
+# no speed-gain lane change (overtaking) ever happened there: headless
+# validation of scenarios 7/9/10 counted 0 lane changes on the stretch while
+# the same runs had dozens on the 100+ m approach edges. Lane connectivity
+# after the stretch (19/18 and -21 are 9-25 m) also means a vehicle cannot
+# leave its lane on the stretch and get back, so overtaking here is a
+# between-lanes speed differential, not a lane-change manoeuvre. Flows and
+# vehicles with departLane first/last/3/4 keep the exit that matches that
+# lane; random/best/free flows sample a 50/50 routeDistribution (WB_mix /
+# EB_mix), so both lanes carry through traffic. The alternative exits
+# despawn ~96 m (WB, junction 23) and ~119 m (EB, node 10.0) from the stretch
+# centre, beyond radar reach and behind the camera.
+WB_ROUTE_ALT_EDGES = "-1 -2 21 20 19 18 -6"
+EB_ROUTE_ALT_EDGES = "-5 -18 -19 -20 -21 -3 -0"
+# departLane -> route id, per direction (lane 3 = curb, lane 4 = inner).
+WB_LANE_ROUTE = {"3": "WB_route_alt", "4": "WB_route"}
+EB_LANE_ROUTE = {"3": "EB_route", "4": "EB_route_alt"}
+# Share of un-pinned flow that takes the ALT exit. Westbound both exits are
+# green together at 719, so 50/50. Eastbound the alt exit (-21_4 -> -3) is a
+# LEFT turn at 532 that is red during the westbound entry phase, while the
+# main exit (-21_3 -> 2) is a right turn that is permitted throughout; a 50%
+# share queued the inner lane back over the stretch, 25% fits in edge -21.
+WB_ALT_SHARE = 0.5
+EB_ALT_SHARE = 0.25
+
 # Perimeter gateways for ambient vehicles and bikes. All eight are outer-ring
 # edges at least 74 m long (so insertion always has room, including for buses)
 # and at least ~100 m from the stretch centre. The old list included -2 (11 m)
@@ -117,6 +147,53 @@ def apply_map_edge_routes(content: str) -> str:
         r'(<route\s+id="EB_route"\s+edges=")[^"]*(")',
         lambda m: m.group(1) + EB_ROUTE_EDGES + m.group(2), content,
     )
+    return _apply_two_exit_routing(content)
+
+
+def _apply_two_exit_routing(content: str) -> str:
+    """Add the alternative-exit routes + 50/50 distributions and point flows at
+    the distributions; explicit vehicles get the route matching their lane.
+    See WB_ROUTE_ALT_EDGES. Idempotent."""
+    import re
+    if "WB_route_alt" in content:
+        return content
+    for base, alt_id, alt_edges, mix_id, alt_share in (
+        ("WB_route", "WB_route_alt", WB_ROUTE_ALT_EDGES, "WB_mix", WB_ALT_SHARE),
+        ("EB_route", "EB_route_alt", EB_ROUTE_ALT_EDGES, "EB_mix", EB_ALT_SHARE),
+    ):
+        pat = re.compile(r'(<route\s+id="%s"\s+edges="[^"]*"\s*/>)' % base)
+        if not pat.search(content):
+            continue
+        extra = (
+            '\n    <route id="%s" edges="%s"/>'
+            '\n    <routeDistribution id="%s">'
+            '\n        <route refId="%s" probability="%.2f"/>'
+            '\n        <route refId="%s" probability="%.2f"/>'
+            '\n    </routeDistribution>' % (alt_id, alt_edges, mix_id, base, 1.0 - alt_share,
+                                             alt_id, alt_share)
+        )
+        content = pat.sub(lambda m: m.group(1) + extra, content, count=1)
+        lane_map = WB_LANE_ROUTE if base == "WB_route" else EB_LANE_ROUTE
+
+        def _route_for(el):
+            """Route id consistent with the element's departLane: an explicit
+            lane, "first" (curb, lane 3) or "last" (inner, lane 4) pins the
+            exit; random/best/free sample the 50/50 distribution."""
+            lane = re.search(r'departLane="([^"]*)"', el)
+            if not lane:
+                return mix_id
+            v = lane.group(1)
+            if v == "first":
+                v = "3"
+            elif v == "last":
+                v = "4"
+            return lane_map.get(v, mix_id)
+
+        def _fix(m):
+            el = m.group(0)
+            return re.sub(r'\broute="%s"' % base, 'route="%s"' % _route_for(el), el)
+        content = re.sub(r'<(?:flow|vehicle)\b[^>]*?\broute="%s"[^>]*>' % base,
+                         _fix, content, flags=re.S)
     return content
 
 
