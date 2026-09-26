@@ -102,20 +102,24 @@ EB_ALT_SHARE = 0.25
 # and -8 (19 m), which are too short to insert anything large.
 AMBIENT_GATEWAYS = ["-1", "1", "5", "-5", "6", "-6", "10", "-10"]
 
-# Sidewalk corridors that pass along or across the monitored stretch. Each entry
-# is (id_suffix, edge list). Pedestrians walk these end to end; SUMO routes them
-# over the walkingareas and crossings built by build_network.py.
-# Sidewalk walks that run the length of the boulevard, not just the 55 m
-# stretch. Short edge lists spent most of their time inside junctions
-# (validation: ~57% of pedestrian samples on a crossing or walking area).
-# The two cross_* corridors cross once, at junction 189, then continue.
+# Sidewalk walks along the monitored boulevard. Each entry is
+# (id_suffix, edge list). Pedestrians walk these end to end; SUMO routes them
+# over the walking areas built by build_network.py.
+#
+# The lists have to be connected. Writing the same one-way edge ids backwards
+# is not a sidewalk in the other direction: SUMO fills each gap with a path
+# through the junction, and that path waited out the red at 719 (the corridor
+# green is about 90 s). Corridors that crossed the boulevard are gone for the
+# same reason. These walks start on the stretch (edges 20 and -20) and continue
+# along that sidewalk until the next traffic light, without taking the turn
+# through it. The two directions are the two sidewalks; each is named twice so
+# the pedestrian budget stays on them. People still pass through a walking area
+# where the sidewalk changes edge. They are not parked there for the car green.
 STRETCH_PED_CORRIDORS = [
-    ("n_wb",    "-1 -2 21 20 19 18 5"),
-    ("n_eb",    "5 18 19 20 21 -2 -1"),
-    ("s_eb",    "-5 -18 -19 -20 -21 2 1"),
-    ("s_wb",    "1 2 -21 -20 -19 -18 -5"),
-    ("cross_n", "-1 -2 21 20 -20 -21 2 1"),
-    ("cross_s", "-5 -18 -19 -20 20 19 18 5"),
+    ("n_wb", "20 19 18"),
+    ("n_eb", "-20 -21"),
+    ("s_eb", "-20 -21"),
+    ("s_wb", "20 19 18"),
 ]
 
 # Monitored-stretch midpoint in CARLA world coordinates -- centre of the CARLA
