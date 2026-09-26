@@ -45,7 +45,7 @@ EXPECT = {
     4: "shockwave seeds must enter the stretch and be held (StopAndGoController)",
     5: "at least one bus must dwell at BS_main",
     8: "lane_blocker_wb must park on edge 20 lane 3",
-    11: "at least one occ_pair must be locked on the stretch",
+    11: "every named occlusion pair that departed must lock on the stretch",
 }
 
 
@@ -60,7 +60,7 @@ def sumo_binary() -> str:
 def build_files(scenario_id, density, duration, direction, ambient_vehicles,
                 pedestrians, bicycles, seed, step_length):
     meta = runner.SCENARIOS[scenario_id]
-    vph = runner.density_to_vph(density)
+    vph = runner.scenario_vph(scenario_id, runner.density_to_vph(density))
     density_map = runner.build_density_map(vph, direction)
     route_file = runner.substitute_density(
         os.path.join(runner.ROUTES_DIR, meta["file"]), density_map, duration)
@@ -275,8 +275,10 @@ def run_one(scenario_id, args, log_path):
             res["problems"].append(EXPECT[8])
     if scenario_id == 11:
         matched = controller_total_matches(controller)
+        together = len(getattr(controller, "_both_seen", ()))
         res["occlusion_pairs_locked"] = matched
-        if matched == 0:
+        res["occlusion_pairs_together"] = together
+        if together == 0 or matched < together:
             res["problems"].append(EXPECT[11])
     if res["crossed_stretch"] == 0:
         res["problems"].append("no vehicle crossed the monitored stretch")

@@ -225,6 +225,15 @@ def _ped_snap_max_m():
 
 PED_SNAP_MAX_M = _ped_snap_max_m()
 
+from pedestrian_path import (  # noqa: E402
+    blend_crossing,
+    choose_sidewalk_point,
+    is_crossing_lane,
+)
+
+PED_SNAP_CONTINUITY_M = 2.0
+PED_CROSS_BLEND_M = 4.0
+
 # Centre of the CARLA render radius (monitored-stretch midpoint in CARLA
 # world coords) and default radius. SUMO simulates the WHOLE city so traffic
 # flows naturally into the stretch, but CARLA only renders actors within this
@@ -288,6 +297,7 @@ class CarlaSyncManager:
         self._ped_z_logged     = False
         self._ped_ground_cache = {}
         self._ped_half_height  = {}   # pid -> bounding_box.extent.z of its walker
+        self._ped_sidewalk     = {}   # pid -> last sidewalk point locked onto
         self._veh_ground_cache = {}   # grid cell -> ground z (vehicle Z cache)
         self._ped_snap_cache   = {}   # grid cell -> (x, y, z) snapped ped pose
         self._spawn_count   = 0
@@ -861,34 +871,34 @@ class CarlaSyncManager:
         x, y = traci.person.getPosition(pid)
         heading = traci.person.getAngle(pid)
         cx, cy, yaw = sumo_to_carla_xy_yaw(x, y, heading)
-        # On a crossing (":<node>_c<i>_0") or walkingarea (":<node>_w<i>_0")
-        # the walker is deliberately off the sidewalk: keep SUMO's position.
-        # Snapping there is what made walkers jump back and forth at the kerb
-        # in front of waiting cars.
         try:
             lane = traci.person.getLaneID(pid)
         except traci.TraCIException:
             lane = ""
-        off_sidewalk = lane.startswith(":") and ("_c" in lane or "_w" in lane)
-        sx, sy = (cx, cy) if off_sidewalk else self._snap_to_sidewalk(cx, cy)
+        locked = self._ped_sidewalk.get(pid)
+        if is_crossing_lane(lane):
+            sx, sy = blend_crossing((cx, cy), locked, PED_CROSS_BLEND_M)
+        else:
+            nearest = self._nearest_sidewalk(cx, cy)
+            chosen = choose_sidewalk_point(
+                (cx, cy), nearest, locked, PED_SNAP_MAX_M, PED_SNAP_CONTINUITY_M)
+            if chosen != (cx, cy):
+                self._ped_sidewalk[pid] = chosen
+            sx, sy = chosen
         half = self._ped_half_height.get(pid, PED_DEFAULT_HALF_HEIGHT)
         return carla.Transform(
             carla.Location(x=sx, y=sy, z=self._pedestrian_ground_z(sx, sy) + half),
             carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0),
         )
 
-    def _snap_to_sidewalk(self, cx: float, cy: float):
-        """Pull (cx, cy) onto the nearest CARLA Sidewalk lane if one is within
-        PED_SNAP_MAX_M; otherwise return the point unchanged (e.g. a walker mid-
-        crossing, where no sidewalk lane exists). Grid-cached. Set PED_SNAP_MAX_M
-        to 0 to disable and trust SUMO's raw placement."""
+    def _nearest_sidewalk(self, cx: float, cy: float):
+        """Closest CARLA sidewalk point within PED_SNAP_MAX_M, or None."""
         if PED_SNAP_MAX_M <= 0:
-            return (cx, cy)
+            return None
         key = (round(cx / GROUND_PROBE_GRID_M), round(cy / GROUND_PROBE_GRID_M))
-        cached = self._ped_snap_cache.get(key)
-        if cached is not None:
-            return cached
-        result = (cx, cy)
+        if key in self._ped_snap_cache:
+            return self._ped_snap_cache[key]
+        found = None
         try:
             wp = self._map.get_waypoint(
                 carla.Location(x=cx, y=cy, z=WAYPOINT_SEARCH_Z),
@@ -898,11 +908,11 @@ class CarlaSyncManager:
             if wp is not None:
                 loc = wp.transform.location
                 if math.hypot(loc.x - cx, loc.y - cy) <= PED_SNAP_MAX_M:
-                    result = (loc.x, loc.y)
+                    found = (loc.x, loc.y)
         except Exception:
             pass
-        self._ped_snap_cache[key] = result
-        return result
+        self._ped_snap_cache[key] = found
+        return found
 
     def _walker_blueprint(self, pid: str) -> carla.ActorBlueprint:
         walkers = self._blueprints.filter(WALKER_FILTER)
@@ -956,3 +966,4 @@ class CarlaSyncManager:
             pass
         self._ped_actors.pop(pid, None)
         self._ped_half_height.pop(pid, None)
+        self._ped_sidewalk.pop(pid, None)

@@ -105,13 +105,17 @@ AMBIENT_GATEWAYS = ["-1", "1", "5", "-5", "6", "-6", "10", "-10"]
 # Sidewalk corridors that pass along or across the monitored stretch. Each entry
 # is (id_suffix, edge list). Pedestrians walk these end to end; SUMO routes them
 # over the walkingareas and crossings built by build_network.py.
+# Sidewalk walks that run the length of the boulevard, not just the 55 m
+# stretch. Short edge lists spent most of their time inside junctions
+# (validation: ~57% of pedestrian samples on a crossing or walking area).
+# The two cross_* corridors cross once, at junction 189, then continue.
 STRETCH_PED_CORRIDORS = [
-    ("n_wb",    "-2 21 20 19 18"),      # north sidewalk, walking west
-    ("n_eb",    "5 18 19 20 21 -2"),    # north sidewalk, walking east
-    ("s_eb",    "-18 -19 -20 -21 2"),   # south sidewalk, walking east
-    ("s_wb",    "2 -21 -20 -19 -18"),   # south sidewalk, walking west
-    ("cross_n", "-2 21 20 -20 -21 2"),  # north sidewalk, crosses at 189
-    ("cross_s", "-18 -19 -20 20 19 18"),# south sidewalk, crosses at 189
+    ("n_wb",    "-1 -2 21 20 19 18 5"),
+    ("n_eb",    "5 18 19 20 21 -2 -1"),
+    ("s_eb",    "-5 -18 -19 -20 -21 2 1"),
+    ("s_wb",    "1 2 -21 -20 -19 -18 -5"),
+    ("cross_n", "-1 -2 21 20 -20 -21 2 1"),
+    ("cross_s", "-5 -18 -19 -20 20 19 18 5"),
 ]
 
 # Monitored-stretch midpoint in CARLA world coordinates -- centre of the CARLA
@@ -124,9 +128,11 @@ AMBIENT_VEH_MAX_VPH   = 500.0   # total ambient passenger veh/h
 AMBIENT_BIKE_MAX_VPH  = 120.0   # total ambient bicycle veh/h
 AMBIENT_PED_MAX_PERHOUR = 400.0 # total pedestrians/h
 
-# Share of the pedestrian budget spent on the monitored stretch corridors; the
-# rest wanders the wider city.
-PED_STRETCH_SHARE = 0.6
+# Share of the pedestrian budget spent on the monitored stretch corridors.
+# Random city-to-city trips spent most of their time inside junctions, which
+# is what pushed the crossing fraction to ~0.57. Stretch walks are the paths
+# the sensors can see.
+PED_STRETCH_SHARE = 1.0
 
 
 def apply_map_edge_routes(content: str) -> str:
@@ -298,15 +304,16 @@ def generate_ambient(net_file: str, seed: int, veh_level: int,
 
         # Pedestrians elsewhere in the city: random sidewalk-to-sidewalk trips.
         city_ph = total_ph * (1.0 - PED_STRETCH_SHARE)
-        n_city = 6
-        for i in range(n_city):
-            a, b = rand_pair(ped_edges)
-            lines.append(
-                f'    <personFlow id="ped_city_{i}" begin="0" end="{duration}" '
-                f'perHour="{city_ph / n_city:.1f}">\n'
-                f'        <personTrip from="{a}" to="{b}"/>\n'
-                f'    </personFlow>'
-            )
+        if city_ph >= 1.0:
+            n_city = 6
+            for i in range(n_city):
+                a, b = rand_pair(ped_edges)
+                lines.append(
+                    f'    <personFlow id="ped_city_{i}" begin="0" end="{duration}" '
+                    f'perHour="{city_ph / n_city:.1f}">\n'
+                    f'        <personTrip from="{a}" to="{b}"/>\n'
+                    f'    </personFlow>'
+                )
 
     return "\n".join(lines)
 

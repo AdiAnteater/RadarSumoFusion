@@ -20,25 +20,8 @@
     <route id="WB_route" edges="-1 -2 21 20 19 18 5"/>
     <route id="EB_route" edges="-5 -18 -19 -20 -21 2 1"/>
 
-    <flow id="WB_outer_truck"
-          type="truck_large" route="WB_route"
-          begin="0" end="3600" vehsPerHour="DENSITY_WB_40"
-          departLane="3" departSpeed="0" arrivalSpeed="current"/>
-
-    <flow id="WB_inner_car"
-          type="car" route="WB_route"
-          begin="0" end="3600" vehsPerHour="DENSITY_WB_60"
-          departLane="4" departSpeed="0" arrivalSpeed="current"/>
-
-    <flow id="EB_outer_truck"
-          type="truck_large" route="EB_route"
-          begin="0" end="3600" vehsPerHour="DENSITY_EB_40"
-          departLane="3" departSpeed="0" arrivalSpeed="current"/>
-
-    <flow id="EB_inner_car"
-          type="car" route="EB_route"
-          begin="0" end="3600" vehsPerHour="DENSITY_EB_60"
-          departLane="4" departSpeed="0" arrivalSpeed="current"/>
+    <!-- Named pairs only. Unpaired truck/car flows saturated the single-lane
+         westbound entry and were not kept beside a partner. -->
 
     <vehicle id="occ_pair_wb_truck_1" type="truck_large" route="WB_route" depart="15"  departLane="3" departSpeed="0" color="0.2,0.2,0.2"/>
     <vehicle id="occ_pair_wb_car_1"   type="car"         route="WB_route" depart="15"  departLane="4" departSpeed="0" color="1,1,0"/>

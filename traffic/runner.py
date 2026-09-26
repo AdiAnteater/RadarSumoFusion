@@ -151,6 +151,17 @@ def density_to_vph(density_slider: int) -> int:
     return int(min_vph + (max_vph - min_vph) * (density_slider - 1) / 99)
 
 
+# Scenarios 2 and 3 share the free-flow slider but are supposed to be heavier.
+# Applied on top of density_to_vph so the same slider value is a different demand.
+SCENARIO_DEMAND_SCALE = {2: 1.5, 3: 2.0}
+
+
+def scenario_vph(scenario_id: int, slider_vph: int) -> int:
+    """Vehicles per hour per direction after the scenario's demand scale."""
+    scale = SCENARIO_DEMAND_SCALE.get(scenario_id, 1.0)
+    return max(1, int(round(slider_vph * scale)))
+
+
 def build_density_map(vph: int, direction: str) -> dict:
     """
     Build the full DENSITY_* substitution map.
@@ -384,10 +395,16 @@ class StopAndGoController(ScenarioController):
     # have turned 15 s stop/go into 7.5 s. Everything here is now keyed off
     # simulation time, so the scenario means the same thing at any step length.
 
+    # How long a seed is held at 0 once it enters the stretch. The old global
+    # 15 s clock often had the seed cross entirely during a "go" phase, so
+    # stop-and-go ran smoother than free flow.
+    HOLD_SECONDS = 12.0
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._held    = set()
+        self._hold_until = {}   # vid -> sim time when the hold ends
         self._entered = set()
+        self._released = set()
 
     def step(self):
         self.step_count += 1
@@ -401,20 +418,22 @@ class StopAndGoController(ScenarioController):
             if not vid.startswith("shockwave_seed_"):
                 continue
             road = traci.vehicle.getRoadID(vid)
-            if road in MONITORED_EDGES:
+            if road in MONITORED_EDGES and vid not in self._released:
                 if vid not in self._entered:
                     self._entered.add(vid)
+                    self._hold_until[vid] = now + self.HOLD_SECONDS
                     print(f"[StopAndGo] {vid} entered stretch (edge {road}) "
-                          f"at t={now:.1f}s")
-                phase = int(now // self.CYCLE_SECONDS) % 2
-                if phase == 0:
+                          f"at t={now:.1f}s; holding {self.HOLD_SECONDS:.0f}s")
+                if now < self._hold_until.get(vid, now):
                     traci.vehicle.setSpeed(vid, self.STOP_SPEED)
                 else:
-                    traci.vehicle.setSpeed(vid, -1)   # back to car-following
-                self._held.add(vid)
-            elif vid in self._held:
+                    traci.vehicle.setSpeed(vid, -1)
+                    self._released.add(vid)
+                    self._hold_until.pop(vid, None)
+            elif vid in self._hold_until:
                 traci.vehicle.setSpeed(vid, -1)
-                self._held.discard(vid)
+                self._hold_until.pop(vid, None)
+                self._released.add(vid)
 
 
 class BottleneckController(ScenarioController):
@@ -496,31 +515,30 @@ class OcclusionController(ScenarioController):
     stretch. That worked only because signal queuing kept them together; with
     corridor-priority signals the car (13.9 m/s) leaves the truck (11.1 m/s)
     ~50 m behind on the 130 m approach and the pair never meets on the
-    stretch (headless validation: 0 pairs locked).
+    stretch (headless validation: 1 of 4 pairs locked). A 0.6 m/s nudge cannot
+    close a gap that opens on the 130 m approach.
 
-    Now the car is shepherded from departure: its max speed is set each step
-    to the truck's current speed, nudged up when it has fallen behind and down
-    when it has crept ahead (route distance from traci.vehicle.getDistance).
-    setMaxSpeed keeps the car-following model and all safety checks active, so
-    there is no rear-end risk. On the stretch both vehicles additionally get
-    lane changing disabled so the car stays in the inner lane beside the truck
-    (truck departLane 3 / route via -6, car departLane 4 / route via 5).
-    Everything is released when the pair leaves the stretch or either vehicle
-    despawns.
+    The lead vehicle is now held until the pair is side by side (route
+    distance), then both run at the truck's speed. On the stretch both get
+    lane changing disabled so the car stays in the inner lane beside the truck.
+    Background truck/car flows are not part of the scenario; only the named
+    pairs are paired.
     """
 
     DIRECTIONS      = ("wb", "eb")
     MAX_PAIRS       = 10
     DEFAULT_LC_MODE = 1621
-    ALIGN_TOL_M     = 1.5     # keep the car within this of the truck (route distance)
-    NUDGE_MPS       = 0.6
+    ALIGN_TOL_M     = 1.5
+    HOLD_GAP_M      = 18.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._matched = set()        # cars currently lane-locked on the stretch
-        self._ever_matched = set()   # every car id ever locked (validation/reporting)
-        self._shepherded = set()     # cars whose max speed is being driven
+        self._matched = set()
+        self._ever_matched = set()
+        self._shepherded = set()
         self._car_max = {}
+        self._both_seen = set()
+        self._holding = set()
 
     def _release(self, truck_id, car_id, vehicles):
         for vid in (car_id, truck_id):
@@ -528,6 +546,7 @@ class OcclusionController(ScenarioController):
                 continue
             try:
                 traci.vehicle.setLaneChangeMode(vid, self.DEFAULT_LC_MODE)
+                traci.vehicle.setSpeed(vid, -1)
             except traci.TraCIException:
                 pass
         if car_id in vehicles and car_id in self._shepherded:
@@ -536,6 +555,7 @@ class OcclusionController(ScenarioController):
             except traci.TraCIException:
                 pass
         self._shepherded.discard(car_id)
+        self._holding.discard(car_id)
 
     def step(self):
         self.step_count += 1
@@ -548,26 +568,61 @@ class OcclusionController(ScenarioController):
                 truck_id = f"occ_pair_{direction}_truck_{i}"
                 car_id   = f"occ_pair_{direction}_car_{i}"
                 if not (truck_id in vehicles and car_id in vehicles):
-                    if car_id in self._matched or car_id in self._shepherded:
+                    if car_id in self._matched or car_id in self._shepherded or car_id in self._holding:
                         self._release(truck_id, car_id, vehicles)
                         self._matched.discard(car_id)
                     continue
+                self._both_seen.add(car_id)
                 try:
                     truck_road = traci.vehicle.getRoadID(truck_id)
                     car_road = traci.vehicle.getRoadID(car_id)
+                    truck_lane = traci.vehicle.getLaneIndex(truck_id)
+                    car_lane = traci.vehicle.getLaneIndex(car_id)
                     v_truck = traci.vehicle.getSpeed(truck_id)
                     gap = traci.vehicle.getDistance(car_id) - traci.vehicle.getDistance(truck_id)
                 except traci.TraCIException:
                     continue
                 if car_id in self._matched and (truck_road not in MONITORED_EDGES
                                                  or car_road not in MONITORED_EDGES):
-                    # Pair has crossed the stretch: hand the car back.
                     self._release(truck_id, car_id, vehicles)
                     self._matched.discard(car_id)
                     continue
-                if car_id in self._matched:
-                    pass
-                elif truck_road in MONITORED_EDGES and car_road in MONITORED_EDGES:
+                # Same lane: the trailer is queued behind the leader, so freezing
+                # the leader traps it. Hold only once they are side by side in
+                # different lanes (or on different edges) and one has pulled ahead.
+                side_by_side = truck_road != car_road or truck_lane != car_lane
+                apart = side_by_side and abs(gap) > (
+                    self.ALIGN_TOL_M if car_id in self._holding else self.HOLD_GAP_M)
+                leader = car_id if gap > 0 else truck_id
+                trailer = truck_id if leader == car_id else car_id
+                if apart:
+                    try:
+                        if traci.vehicle.getSpeed(trailer) < 0.3 and abs(gap) < self.HOLD_GAP_M + 10:
+                            apart = False
+                    except traci.TraCIException:
+                        pass
+                try:
+                    if apart:
+                        traci.vehicle.setSpeed(leader, 0.0)
+                        traci.vehicle.setSpeed(trailer, -1)
+                        self._holding.add(car_id)
+                    else:
+                        traci.vehicle.setSpeed(leader, -1)
+                        traci.vehicle.setSpeed(trailer, -1)
+                        self._holding.discard(car_id)
+                        if car_id not in self._shepherded:
+                            try:
+                                self._car_max[car_id] = traci.vehicletype.getMaxSpeed(
+                                    traci.vehicle.getTypeID(car_id).split("@", 1)[0])
+                            except traci.TraCIException:
+                                self._car_max[car_id] = 16.67
+                            self._shepherded.add(car_id)
+                        traci.vehicle.setMaxSpeed(
+                            car_id, min(max(v_truck, 0.3), self._car_max.get(car_id, 16.67)))
+                except traci.TraCIException:
+                    continue
+                if (not apart and truck_road in MONITORED_EDGES
+                        and car_road in MONITORED_EDGES and car_id not in self._matched):
                     self._matched.add(car_id)
                     self._ever_matched.add(car_id)
                     for vid in (car_id, truck_id):
@@ -577,25 +632,6 @@ class OcclusionController(ScenarioController):
                             pass
                     print(f"[Occlusion] pairing {truck_id} / {car_id} on the stretch "
                           f"at t={traci.simulation.getTime():.1f}s")
-                if car_id not in self._shepherded:
-                    try:
-                        self._car_max[car_id] = traci.vehicletype.getMaxSpeed(
-                            traci.vehicle.getTypeID(car_id).split("@", 1)[0])
-                    except traci.TraCIException:
-                        self._car_max[car_id] = 16.67
-                    self._shepherded.add(car_id)
-                # Shepherd: car max speed tracks the truck, corrected by the gap.
-                if gap > self.ALIGN_TOL_M:
-                    cap = max(0.0, v_truck - self.NUDGE_MPS)
-                elif gap < -self.ALIGN_TOL_M:
-                    cap = v_truck + self.NUDGE_MPS
-                else:
-                    cap = v_truck
-                cap = max(cap, 0.3)
-                try:
-                    traci.vehicle.setMaxSpeed(car_id, min(cap, self._car_max.get(car_id, 16.67)))
-                except traci.TraCIException:
-                    pass
 
     def on_stop(self):
         try:
@@ -617,24 +653,34 @@ class SlowLeaderController(ScenarioController):
     the time a platoon reaches the 55 m stretch it is already sorted and the
     "aggressive" cars simply follow. Lane connectivity after the stretch also
     pins each vehicle to its lane there (see ambient_traffic.WB_ROUTE_ALT_EDGES),
-    so on this block "overtaking" is a between-lanes speed differential. To make
-    it happen where the sensors look, slow-type vehicles (car_slow, curb lane)
-    are ramped down to SLOW_ON_STRETCH_MPS while on the stretch via setMaxSpeed
-    (car-following and safety checks stay active) and restored to their type's
-    maximum on exit; fast vehicles in the inner lane then pass them in view
-    (Kesting MOBIL speed-gain motive, expressed as passing rather than as a
-    lane change).
+    so a vehicle cannot change lanes on the stretch and change back. To make
+    the manoeuvre visible anyway, an aggressive car queued behind a slow leader
+    in the curb lane is sent to the inner lane and its route is switched to the
+    inner-lane exit, so it does not have to change back on the short edges
+    after the stretch. Slow leaders are held in the curb lane while they are
+    capped.
     """
 
     SLOW_TYPE = "car_slow"
+    AGGRESSIVE_TYPE = "car_aggressive"
     SLOW_ON_STRETCH_MPS = {7: 5.0, 9: 4.0, 10: 4.0}
     CAP_DECEL_MPS2 = 2.0
+    CURB_LANE = 3
+    INNER_LANE = 4
+    # Edge on the stretch -> route whose exit matches the inner lane.
+    INNER_ROUTE = {"20": "WB_route", "-20": "EB_route_alt"}
+    LC_SECONDS = 6.0
+    BEHIND_M = 30.0
+    CLEAR_BEHIND_M = 6.0
+    CLEAR_AHEAD_M = 18.0
+    DEFAULT_LC_MODE = 1621
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._capped = {}
         self._type_max = {}
         self._base_type = {}
+        self._changed = set()
 
     def _restore_speed(self, vid):
         entry = self._capped.pop(vid, None)
@@ -642,8 +688,23 @@ class SlowLeaderController(ScenarioController):
             return
         try:
             traci.vehicle.setMaxSpeed(vid, self._type_max[entry[0]])
+            traci.vehicle.setLaneChangeMode(vid, self.DEFAULT_LC_MODE)
         except traci.TraCIException:
             pass
+
+    def _inner_clear(self, road, pos):
+        try:
+            ids = traci.lane.getLastStepVehicleIDs(f"{road}_{self.INNER_LANE}")
+        except traci.TraCIException:
+            return False
+        for other in ids:
+            try:
+                other_pos = traci.vehicle.getLanePosition(other)
+            except traci.TraCIException:
+                continue
+            if pos - self.CLEAR_BEHIND_M <= other_pos <= pos + self.CLEAR_AHEAD_M:
+                return False
+        return True
 
     def step(self):
         self.step_count += 1
@@ -658,6 +719,7 @@ class SlowLeaderController(ScenarioController):
                 self._capped.pop(vid, None)
         if len(self._base_type) > 4 * max(len(live), 1) + 64:
             self._base_type = {k: v for k, v in self._base_type.items() if k in live}
+        slow_ahead = {edge: [] for edge in MONITORED_EDGES}
         for vid in vehicles:
             vtype = self._base_type.get(vid)
             if vtype is None:
@@ -671,7 +733,8 @@ class SlowLeaderController(ScenarioController):
                 self._base_type[vid] = vtype
             if vtype != self.SLOW_TYPE:
                 continue
-            on = traci.vehicle.getRoadID(vid) in MONITORED_EDGES
+            road = traci.vehicle.getRoadID(vid)
+            on = road in MONITORED_EDGES
             if on:
                 if vtype not in self._type_max:
                     self._type_max[vtype] = traci.vehicletype.getMaxSpeed(vtype)
@@ -683,8 +746,39 @@ class SlowLeaderController(ScenarioController):
                 if vid not in self._capped or target != self._capped[vid][1]:
                     traci.vehicle.setMaxSpeed(vid, target)
                     self._capped[vid] = (vtype, target)
+                    try:
+                        traci.vehicle.setLaneChangeMode(vid, 0)
+                    except traci.TraCIException:
+                        pass
+                try:
+                    if traci.vehicle.getLaneIndex(vid) == self.CURB_LANE:
+                        slow_ahead[road].append(traci.vehicle.getLanePosition(vid))
+                except traci.TraCIException:
+                    pass
             elif vid in self._capped:
                 self._restore_speed(vid)
+        for vid in vehicles:
+            if self._base_type.get(vid) != self.AGGRESSIVE_TYPE or vid in self._changed:
+                continue
+            try:
+                road = traci.vehicle.getRoadID(vid)
+                if road not in MONITORED_EDGES or traci.vehicle.getLaneIndex(vid) != self.CURB_LANE:
+                    continue
+                pos = traci.vehicle.getLanePosition(vid)
+            except traci.TraCIException:
+                continue
+            if not any(0 < ahead - pos <= self.BEHIND_M for ahead in slow_ahead.get(road, ())):
+                continue
+            if not self._inner_clear(road, pos):
+                continue
+            try:
+                traci.vehicle.setRouteID(vid, self.INNER_ROUTE[road])
+                traci.vehicle.changeLane(vid, self.INNER_LANE, self.LC_SECONDS)
+                self._changed.add(vid)
+                print(f"[LaneChange] {vid} curb -> inner on {road} "
+                      f"via {self.INNER_ROUTE[road]} at t={traci.simulation.getTime():.1f}s")
+            except traci.TraCIException:
+                pass
 
     def on_stop(self):
         for vid in list(self._capped):
@@ -860,7 +954,7 @@ def run(scenario_id: int, density: int, duration: int,
             sync.reset_to_async()
 
     # --- Build temporary files ---
-    vph         = density_to_vph(density)
+    vph         = scenario_vph(scenario_id, density_to_vph(density))
     density_map = build_density_map(vph, direction)
     route_tmpl  = os.path.join(ROUTES_DIR, meta["file"])
     route_file  = substitute_density(route_tmpl, density_map, duration)
