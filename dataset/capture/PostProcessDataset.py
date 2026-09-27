@@ -183,6 +183,27 @@ DEFAULT_FMCW_AZ_SIGMA_0_DEG     = 6.0
 DEFAULT_FMCW_AZ_SIGMA_FLOOR_DEG = 0.3
 
 
+def _write_segment_doppler(capture_dir: Path, seg: dict) -> None:
+    """radar_labeling_qa/segment_doppler.csv: Doppler + visibility per segment."""
+    qa = Path(capture_dir) / "radar_labeling_qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    cols = ["segment_id", "scenario_id", "returns", "visible_pct", "actor_returns",
+            "actor_mean_abs_radial_v_mps", "actor_moving_pct"]
+    with (qa / "segment_doppler.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(cols)
+        for sid in sorted(seg, key=lambda k: int(k) if str(k).isdigit() else 1e9):
+            g = seg[sid]
+            w.writerow([
+                sid, g["scenario"], g["rows"],
+                round(100.0 * g["visible"] / max(g["rows"], 1), 1),
+                g["dyn"],
+                round(g["dyn_abs_v_sum"] / max(g["dyn"], 1), 3),
+                round(100.0 * g["dyn_moving"] / max(g["dyn"], 1), 1),
+            ])
+    print(f"  per-segment Doppler summary -> {qa / 'segment_doppler.csv'}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Data loaders
 # ---------------------------------------------------------------------------
@@ -578,6 +599,7 @@ def post_process_capture_dir(
     }
     max_walker_speed = max(0.1, float(max_walker_speed))
 
+    seg_doppler: dict = {}
     FMCW_COLS = ["snr_dB", "visible",
                  "depth_m_noisy", "velocity_mps_noisy", "azimuth_rad_noisy"]
 
@@ -825,7 +847,28 @@ def post_process_capture_dir(
 
                 writer.writerow(row)
 
+                # Per-segment Doppler / visibility (campaign captures only).
+                sid = row.get("segment_id", "")
+                if sid != "" and sid is not None:
+                    sg = seg_doppler.setdefault(sid, {
+                        "scenario": row.get("scenario_id", ""), "rows": 0, "visible": 0,
+                        "dyn": 0, "dyn_moving": 0, "dyn_abs_v_sum": 0.0})
+                    sg["rows"] += 1
+                    if row.get("visible") == "1":
+                        sg["visible"] += 1
+                    if aid_raw:
+                        try:
+                            v_abs = abs(float(row.get("velocity_mps") or 0.0))
+                        except ValueError:
+                            v_abs = 0.0
+                        sg["dyn"] += 1
+                        sg["dyn_abs_v_sum"] += v_abs
+                        if v_abs >= 0.5:
+                            sg["dyn_moving"] += 1
+
     tmp.replace(out)
+    if seg_doppler:
+        _write_segment_doppler(out.parent, seg_doppler)
 
     print(flush=True)
     print(f"  Vehicle Doppler synthesized : {stats['vehicle_fixed']:,} "

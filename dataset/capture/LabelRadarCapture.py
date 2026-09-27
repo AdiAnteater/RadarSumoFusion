@@ -30,6 +30,7 @@ _dc.bootstrap(__file__)
 import carla
 
 from capture.actor_frame_log import ActorFrameLogger
+from capture.campaign_control import SegmentLookup, load_segments
 from capture.CaptureRadarCameraData import (
     RADAR_HORIZONTAL_FOV_DEG,
     RADAR_MAX_RANGE_M,
@@ -54,6 +55,9 @@ LABELED_CSV = "radar_data_labeled.csv"
 # Added by the labeler: exact world hit point + physical class of every return
 # (vehicle / pedestrian / road / structure / unassigned).
 EXTRA_LABEL_COLUMNS = ["hit_world_x_m", "hit_world_y_m", "hit_world_z_m", "return_class"]
+# Campaign captures (segments.json present) also get these: which campaign row
+# (segment) and which traffic scenario each return belongs to.
+SEGMENT_COLUMNS = ["segment_id", "scenario_id"]
 
 
 def label_after_capture_from_env() -> bool:
@@ -242,7 +246,14 @@ def label_radar_capture_dir(
     ) as wf:
         reader = csv.DictReader(rf)
         fieldnames = list(reader.fieldnames or [])
-        for extra_col in EXTRA_LABEL_COLUMNS:
+        segments = load_segments(capture_dir)
+        seg_lookup = SegmentLookup(segments) if segments else None
+        seg_stats: dict = {}
+        extra_cols = EXTRA_LABEL_COLUMNS + (SEGMENT_COLUMNS if seg_lookup else [])
+        if seg_lookup:
+            print(f"      campaign capture: {len(segments)} segment(s) -> "
+                  f"segment_id / scenario_id columns + per-segment summary", flush=True)
+        for extra_col in extra_cols:
             if extra_col not in fieldnames:
                 fieldnames.append(extra_col)
         writer = csv.DictWriter(wf, fieldnames=fieldnames)
@@ -301,6 +312,23 @@ def label_radar_capture_dir(
             rc = label["return_class"]
             row["return_class"] = rc
             class_counts[rc] = class_counts.get(rc, 0) + 1
+            if seg_lookup:
+                seg = seg_lookup.get(frame_id)
+                sid = seg["segment_id"] if seg else ""
+                row["segment_id"] = sid
+                row["scenario_id"] = seg.get("scenario", "") if seg else ""
+                st = seg_stats.setdefault(sid, {"rows": 0, "with_candidates": 0,
+                                                "matched": 0, "classes": {},
+                                                "frames": set(), "actors": set()})
+                st["rows"] += 1
+                st["classes"][rc] = st["classes"].get(rc, 0) + 1
+                st["frames"].add(frame_id)
+                if label["had_candidates"]:
+                    st["with_candidates"] += 1
+                if label["matched"]:
+                    st["matched"] += 1
+                    if label["actor_id"] is not None:
+                        st["actors"].add(label["actor_id"])
             per = class_counts_by_sensor.setdefault(sensor_label, {})
             per[rc] = per.get(rc, 0) + 1
 
@@ -395,6 +423,8 @@ def label_radar_capture_dir(
     print(flush=True)
 
     _write_return_class_summary(capture_dir, class_counts, class_counts_by_sensor, rows_written)
+    if seg_lookup:
+        _write_segment_summary(capture_dir, segments, seg_stats)
 
     write_capture_labeling_report(
         collector,
@@ -402,6 +432,52 @@ def label_radar_capture_dir(
         labelable_min_speed_mps=labelable_min_speed,
     )
     return out_path
+
+
+def _write_segment_summary(capture_dir: Path, segments: list, stats: dict) -> None:
+    """radar_labeling_qa/segment_summary.{csv,md}: one row per campaign segment."""
+    order = ["vehicle", "pedestrian", "road", "structure", "unassigned"]
+    rows = []
+    for seg in segments:
+        st = stats.get(seg["segment_id"], {"rows": 0, "with_candidates": 0, "matched": 0,
+                                           "classes": {}, "frames": set(), "actors": set()})
+        n = max(st["rows"], 1)
+        frames = max(len(st["frames"]), 1)
+        row = {
+            "segment_id": seg["segment_id"],
+            "scenario": seg.get("scenario", ""),
+            "scenario_name": seg.get("scenario_name", ""),
+            "density": seg.get("density", ""),
+            "direction": seg.get("direction", ""),
+            "status": seg.get("status", ""),
+            "recorded_s": round(seg.get("recorded_frames", 0) / float(seg.get("rate_hz", 20) or 20), 1),
+            "frames_with_returns": len(st["frames"]),
+            "returns": st["rows"],
+            "returns_per_frame": round(st["rows"] / frames, 1),
+            "matched": st["matched"],
+            "match_rate_given_candidates_pct": round(100.0 * st["matched"] / max(st["with_candidates"], 1), 1),
+            "unique_actors_labeled": len(st["actors"]),
+        }
+        for k in order:
+            row[f"{k}_pct"] = round(100.0 * st["classes"].get(k, 0) / n, 2)
+        rows.append(row)
+    qa = capture_dir / "radar_labeling_qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    if rows:
+        with (qa / "segment_summary.csv").open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(rows)
+        cols = list(rows[0].keys())
+        md = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+        md += ["| " + " | ".join(str(r[c]) for c in cols) + " |" for r in rows]
+        (qa / "segment_summary.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+        print("Per-segment summary:", flush=True)
+        for r in rows:
+            print(f"  seg {r['segment_id']} S{r['scenario']:>2} {r['scenario_name'][:24]:24s} "
+                  f"{r['recorded_s']:6.1f}s  {r['returns']:>10,} returns  "
+                  f"veh {r['vehicle_pct']:5.2f}%  ped {r['pedestrian_pct']:5.2f}%  "
+                  f"actors {r['unique_actors_labeled']}", flush=True)
 
 
 def _write_return_class_summary(capture_dir: Path, counts: dict, by_sensor: dict, total: int) -> None:

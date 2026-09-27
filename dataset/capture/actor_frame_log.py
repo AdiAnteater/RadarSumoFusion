@@ -105,9 +105,9 @@ class ActorFrameLogger:
             try:
                 if item is None:  # sentinel: all queued frames drained -> stop
                     return
-                frame_id, actor_snapshots = item
+                frame_id, actor_snapshots, segment = item
                 try:
-                    self._write_record(frame_id, actor_snapshots)
+                    self._write_record(frame_id, actor_snapshots, segment)
                 except Exception as exc:  # noqa: BLE001 - never kill the writer
                     self._write_errors += 1
                     if self._write_errors <= 3:
@@ -128,7 +128,7 @@ class ActorFrameLogger:
                         except Exception:  # noqa: BLE001
                             pass
 
-    def _write_record(self, frame_id: int, actor_snapshots: list[dict]) -> None:
+    def _write_record(self, frame_id: int, actor_snapshots: list[dict], segment=None) -> None:
         if frame_id in self._seen_frames:
             return
         actors_out = []
@@ -149,6 +149,8 @@ class ActorFrameLogger:
                 }
             )
         record = {"frame": int(frame_id), "actors": actors_out}
+        if segment is not None:
+            record["segment"] = int(segment)
         line = json.dumps(record, separators=(",", ":")) + "\n"
         with self._write_lock:
             if self._closed:
@@ -156,13 +158,13 @@ class ActorFrameLogger:
             self._seen_frames.add(frame_id)
             self._handle.write(line)
 
-    def log_frame(self, frame_id: int, actor_snapshots: list[dict]) -> None:
+    def log_frame(self, frame_id: int, actor_snapshots: list[dict], segment=None) -> None:
         # Runs in CARLA's on_tick (streaming) thread: keep it O(1). The snapshot
         # dicts are immutable post-build (also shared with the snapshotter cache),
         # so handing the reference to the writer thread is safe.
         if self._closed:
             return
-        self._queue.put((int(frame_id), actor_snapshots))
+        self._queue.put((int(frame_id), actor_snapshots, segment))
 
     def close(self) -> None:
         # Stop accepting new frames, drain everything already queued, then close.
@@ -235,7 +237,12 @@ class TickActorSnapshotter:
         *,
         snapshot_fn: Callable[["carla.World", "carla.WorldSnapshot"], list[dict]],
         max_frames_in_memory: int = 600,
+        segment_fn: Callable[[int], "int | None"] | None = None,
     ) -> None:
+        # Campaign mode: segment_fn(frame) -> segment id, or None for frames
+        # outside every recording window. Those frames are still cached (the
+        # camera writer may ask) but never written to actor_frames.jsonl.
+        self._segment_fn = segment_fn
         self._world = world
         self._snapshot_fn = snapshot_fn
         self._max_frames = max(64, int(max_frames_in_memory))
@@ -285,8 +292,13 @@ class TickActorSnapshotter:
         # guarded internally and no-ops once closed, so this is belt-and-suspenders.
         if self._stopped:
             return
+        segment = None
+        if self._segment_fn is not None:
+            segment = self._segment_fn(frame_id)
+            if segment is None:
+                return
         try:
-            self._logger.log_frame(frame_id, actor_snaps)
+            self._logger.log_frame(frame_id, actor_snaps, segment=segment)
         except Exception as exc:  # noqa: BLE001 - never abort the tick thread
             self._error_count += 1
             if self._error_count <= 3:

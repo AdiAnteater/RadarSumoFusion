@@ -381,7 +381,11 @@ class CarlaSyncManager:
         if not self._connected:
             return False
         try:
-            self._world.wait_for_tick(timeout)
+            snap = self._world.wait_for_tick(timeout)
+            # Frame id of the tick we are about to step on. The campaign
+            # orchestrator uses the first one to place each scenario's
+            # recording window in capture frames.
+            self.last_frame = int(getattr(snap, "frame", 0) or 0)
             return True
         except RuntimeError:
             return False

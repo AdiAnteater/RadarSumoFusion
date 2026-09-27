@@ -52,6 +52,7 @@ import os
 import sys
 import re
 import argparse
+import json
 import tempfile
 import subprocess
 import time
@@ -844,7 +845,8 @@ def run(scenario_id: int, density: int, duration: int,
         cull: bool = True, extend_routes: bool = False,
         step_length: float = DEFAULT_STEP_LENGTH,
         external_tick: bool = False, sync_timeout: float = 60.0,
-        stretch_signals_mode: str = "green"):
+        stretch_signals_mode: str = "green",
+        status_file: str = "", stop_file: str = ""):
 
     meta = SCENARIOS.get(scenario_id)
     if not meta:
@@ -1053,8 +1055,35 @@ def run(scenario_id: int, density: int, duration: int,
 
     print("Simulation running - press Ctrl+C to stop early.\n")
 
+    # Campaign hooks (fusion/campaign.py). status_file: JSON the orchestrator
+    # polls -- the CARLA frame of our first step places the scenario's
+    # recording window. stop_file: when it appears we end the scenario cleanly
+    # (finally-block unmirrors every actor), no console signal needed.
+    status = {"state": "starting", "scenario": scenario_id, "pid": os.getpid()}
+    last_status_t = 0.0
+
+    def _status(**kw):
+        nonlocal last_status_t
+        if not status_file:
+            return
+        status.update(kw)
+        last_status_t = time.monotonic()
+        tmp = status_file + f".tmp{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(status, f)
+            os.replace(tmp, status_file)
+        except OSError:
+            pass
+
+    steps_done = 0
+    exit_state = "done"
     try:
         while traci.simulation.getMinExpectedNumber() > 0:
+            if stop_file and steps_done % 5 == 0 and os.path.exists(stop_file):
+                print("[runner] stop requested by the campaign orchestrator.", flush=True)
+                exit_state = "stopped"
+                break
             if external_tick and sync is not None:
                 # Block until the capture process completes the next CARLA frame.
                 # One SUMO step per CARLA tick keeps the two clocks locked. We
@@ -1072,6 +1101,17 @@ def run(scenario_id: int, density: int, duration: int,
             controller.step()
             if sync:
                 sync.step()
+            steps_done += 1
+            if status_file:
+                now_m = time.monotonic()
+                if steps_done == 1:
+                    _status(state="running",
+                            first_frame=getattr(sync, "last_frame", None) if sync else None,
+                            sim_time=traci.simulation.getTime())
+                elif now_m - last_status_t >= 1.0:
+                    _status(sim_time=traci.simulation.getTime(),
+                            carla_frame=getattr(sync, "last_frame", None) if sync else None,
+                            vehicles=traci.vehicle.getIDCount())
 
             if wall_pace:
                 next_deadline += step_length
@@ -1084,10 +1124,16 @@ def run(scenario_id: int, density: int, duration: int,
                     next_deadline = time.monotonic()
     except KeyboardInterrupt:
         print("\nStopped by user.")
+        exit_state = "stopped"
+    except Exception as exc:  # noqa: BLE001
+        exit_state = "error"
+        _status(error=str(exc))
+        raise
     finally:
         controller.on_stop()
         if sync:
             sync.stop()
+        _status(state=exit_state, steps=steps_done)
         traci.close()
         for f in tmp_files:
             try:
@@ -1152,6 +1198,11 @@ def main():
                              "fixed_delta_seconds as the SUMO step-length. Also "
                              "settable via DATASET_EXTERNAL_TICK=1. Omit for a "
                              "standalone SUMO-only visual run.")
+    parser.add_argument("--status-file", type=str, default="",
+                        help="Campaign mode: write run status JSON here (first CARLA "
+                             "frame, sim time, exit state).")
+    parser.add_argument("--stop-file", type=str, default="",
+                        help="Campaign mode: end the run cleanly when this file exists.")
     parser.add_argument("--stretch-signals", type=str, default="green",
                         choices=("green", "static"),
                         help="green: corridor-priority signal programs on the boulevard "
@@ -1190,6 +1241,8 @@ def main():
         external_tick=external_tick,
         sync_timeout=args.sync_timeout,
         stretch_signals_mode=args.stretch_signals,
+        status_file=args.status_file,
+        stop_file=args.stop_file,
     )
 
 

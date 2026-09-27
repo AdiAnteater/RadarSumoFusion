@@ -7,6 +7,9 @@ Example:
     python run_fusion.py --scenario 3 --density 60 --duration 300 \
         --radars 8 --rate-hz 20 --pedestrians 20 --bicycles 10
 
+Campaign (several scenarios, one capture) from a file saved by fusion_gui.py:
+    python run_fusion.py --campaign my_campaign.json
+
 Prereqs: CarlaUE4 running on Town10HD_Opt, SUMO_HOME set, venv active
 (carla, traci, sumolib installed). Run once first:  python traffic/build_network.py
 """
@@ -18,6 +21,7 @@ import sys
 
 from fusion.config import FusionConfig, VALID_RADAR_COUNTS
 from fusion.orchestrator import run
+from fusion.campaign import CampaignConfig, run_campaign
 
 
 def _bool_flag(parser, name, default, help_on, help_off):
@@ -70,7 +74,15 @@ def main() -> int:
     _bool_flag(p, "clear-trees", True,
                "hide trees over the monitored stretch", "keep trees")
     p.add_argument("--sync-timeout", type=float, default=180.0)
+    p.add_argument("--campaign", default="",
+                   help="run a campaign JSON (saved from fusion_gui.py); all other "
+                        "flags are ignored except --carla-host/--carla-port")
     args = p.parse_args()
+
+    if args.campaign:
+        ccfg = CampaignConfig.load(args.campaign)
+        ccfg.carla_host, ccfg.carla_port = args.carla_host, args.carla_port
+        return 0 if run_campaign(ccfg).ok else 1
 
     cfg = FusionConfig(
         scenario=args.scenario, density=args.density, duration=args.duration,

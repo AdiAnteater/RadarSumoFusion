@@ -1,3 +1,6 @@
 # Python bytecode caches
 __pycache__/
 *.py[cod]
+
+# campaign manager autosave
+.last_campaign.json

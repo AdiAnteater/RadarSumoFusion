@@ -30,6 +30,7 @@ from capture.ExportCameraExtrinsics import write_camera_extrinsics_to_dataset_di
 from capture.ExportRadarExtrinsics import write_radar_extrinsics_live_to_dataset_dir
 from capture.radar_layout import RADAR_PITCH_DEG, apply_radar_pitch
 from capture.radar_stream import is_per_radar_buffer, make_radar_capture_buffer
+from capture.campaign_control import CampaignGate, campaign_control_dir_from_env
 from capture.actor_frame_log import (
     ActorFrameLogger,
     TickActorSnapshotter,
@@ -157,9 +158,16 @@ def vehicle_class_from_type_id(type_id):
     return "car"
 
 
+def _capture_name_suffix_from_env() -> str:
+    """Optional DATASET_CAPTURE_NAME -> sensor_capture_<ts>_<name> (campaigns)."""
+    raw = os.environ.get("DATASET_CAPTURE_NAME", "").strip()
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in raw)[:48]
+    return f"_{safe}" if safe else ""
+
+
 def make_output_paths(base_dir):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, f"sensor_capture_{timestamp}")
+    run_dir = os.path.join(base_dir, f"sensor_capture_{timestamp}{_capture_name_suffix_from_env()}")
     camera_dir = os.path.join(run_dir, "camera_frames")
     os.makedirs(camera_dir, exist_ok=True)
     radar_csv = os.path.join(run_dir, "radar_data.csv")
@@ -238,6 +246,7 @@ def setup_camera_writer(path):
             "nearest_pedestrian_distance_m",
             "nearby_pedestrian_ids",
             "nearby_pedestrian_classes",
+            "segment_id",
         ]
     )
     return file_handle, writer
@@ -2207,9 +2216,11 @@ class CameraFrameWriter:
         camera_file,
         lock: threading.Lock,
         counts: dict,
+        segment_fn=None,
     ) -> None:
         import concurrent.futures  # noqa: WPS433
 
+        self._segment_fn = segment_fn
         self._snapshotter = snapshotter
         self._csv_writer = camera_csv_writer
         self._camera_file = camera_file
@@ -2330,6 +2341,8 @@ class CameraFrameWriter:
         image_name = f"frame_{image.frame:08d}.png"
         image_path = os.path.join(folder, image_name)
         self._submit_encode(image, image_path)
+        seg = self._segment_fn(int(image.frame)) if self._segment_fn else None
+        seg_id = "" if seg is None else seg
 
         nearest = nearby_actors[0] if nearby_actors else None
         nearby_ids = ";".join(str(a["id"]) for a in nearby_actors)
@@ -2392,6 +2405,7 @@ class CameraFrameWriter:
                     np_dist,
                     ped_ids,
                     ped_classes,
+                    seg_id,
                 ]
             )
             self._counts["camera_frames"] += 1
@@ -2499,6 +2513,17 @@ def main():
 
     radar_file, radar_writer = setup_radar_writer(radar_csv)
     camera_file, camera_writer = setup_camera_writer(camera_csv)
+
+    # Campaign mode (fusion/campaign.py): record only the frame windows the
+    # orchestrator asks for; keep ticking in between. See campaign_control.py.
+    campaign_gate = None
+    campaign_dir = campaign_control_dir_from_env()
+    if campaign_dir is not None:
+        campaign_gate = CampaignGate(campaign_dir, run_dir)
+        campaign_gate.write_status()
+        print(f"[capture] CAMPAIGN MODE: control dir {campaign_dir}; nothing is "
+              "recorded until the orchestrator opens a segment window.", flush=True)
+    segment_fn = campaign_gate.segment_for_frame if campaign_gate is not None else None
 
     labelable_min_speed_mps = labelable_min_speed_from_env()
     labeling_collector = LabelingStatsCollector(labelable_min_speed_mps=labelable_min_speed_mps)
@@ -2629,7 +2654,8 @@ def main():
         world,
         run_dir,
         snapshot_fn=make_fast_tick_snapshot_fn(world),
-        max_frames_in_memory=2400,  # 2 min at 20 Hz; the camera meta stage never lags this much
+        max_frames_in_memory=2400,
+        segment_fn=segment_fn,  # 2 min at 20 Hz; the camera meta stage never lags this much
     )
     radar_queue = make_radar_capture_buffer()
     camera_frame_writer = CameraFrameWriter(
@@ -2638,6 +2664,7 @@ def main():
         camera_file,
         lock,
         counts,
+        segment_fn=segment_fn,
     )
 
     def process_measurement_item(item) -> None:
@@ -2752,6 +2779,8 @@ def main():
                     entry["last_frame"] = frame_id
                 if frame_id > radar_latest_frame[0]:
                     radar_latest_frame[0] = frame_id
+                if campaign_gate is not None and not campaign_gate.is_recorded(frame_id):
+                    return   # between campaign segments: tick, but record nothing
                 item = (measurement, sid, slabel, radar_actor)
                 if is_per_radar_buffer(radar_queue):
                     radar_queue.enqueue(slabel, item)
@@ -2848,6 +2877,8 @@ def main():
                     entry["last_frame"] = frame_id
                 if frame_id > camera_latest_frame[0]:
                     camera_latest_frame[0] = frame_id
+                if campaign_gate is not None and not campaign_gate.is_recorded(frame_id):
+                    return
                 camera_frame_writer.enqueue(
                     image, sid, slabel, folder, sensor_hfov
                 )
@@ -2861,7 +2892,7 @@ def main():
             camera.listen(camera_callback)
 
         print("Listening to sensors...")
-        capture_duration_s = capture_duration_s_from_env()
+        capture_duration_s = None if campaign_gate is not None else capture_duration_s_from_env()
         if capture_duration_s is not None:
             capture_deadline = time.monotonic() + capture_duration_s
             print(
@@ -2901,6 +2932,11 @@ def main():
                 last_tick_at = t0
             radar_watchdog_check(tick_frame)
             camera_watchdog_check(tick_frame)
+            if campaign_gate is not None:
+                campaign_gate.on_tick(tick_frame)
+                if campaign_gate.stop_requested:
+                    print("[capture] campaign finished; stopping capture.", flush=True)
+                    break
             if enter_pressed():
                 break
             if capture_deadline is not None and time.monotonic() >= capture_deadline:
@@ -3064,6 +3100,10 @@ def main():
         except Exception as exc:  # noqa: BLE001
             print(f"[capture] (status print failed: {exc})", file=sys.stderr, flush=True)
 
+        if campaign_gate is not None:
+            campaign_gate.finalize()
+            campaign_gate.set_state("labeling")
+
         # Write run_meta BEFORE the (hours-long) offline steps so the capture is
         # fully recorded even if something below fails.
         write_run_meta(
@@ -3087,6 +3127,8 @@ def main():
                  "--capture-dir", run_dir],
             )
             if label_ok and postprocess_after_capture_from_env():
+                if campaign_gate is not None:
+                    campaign_gate.set_state("postprocessing")
                 _run_offline_step(
                     "Post-processing (Doppler/RCS)",
                     [sys.executable, str(capture_dir() / "PostProcessDataset.py"),
@@ -3099,6 +3141,8 @@ def main():
                 labelable_min_speed_mps=labelable_min_speed_mps,
             )
 
+        if campaign_gate is not None:
+            campaign_gate.set_state("done")
         print("Recording stopped.")
         print(f"Radar file: {radar_csv}")
         print(f"Camera file: {camera_csv}")

@@ -119,6 +119,68 @@ angular-distance comparison that is an exact tie on a straight road, so the side
 was decided by floating-point noise (R5/R6/R8 faced west while the rest faced east
 in the 2026-09-17 captures).
 
+## Campaigns: several scenarios, one capture (2026-09-27)
+
+`fusion_gui.py` is now a campaign manager. A campaign is a list of runs (one
+traffic scenario each) recorded back to back into ONE `sensor_capture_*` folder:
+one radar CSV, one actor log, one camera stream, one labeling and one
+post-processing pass.
+
+GUI: the runs table starts empty. **Add run** opens the traffic settings
+(scenario, density with a veh/h hint, recorded duration, direction, ambient /
+pedestrian / bicycle sliders, seed, signal mode, note); **Confirm** adds the row.
+Edit (or double-click), Duplicate, Remove, Move up / down, Save / Load (JSON).
+The last campaign is restored on start (`.last_campaign.json`). Sensors and
+clock are campaign-wide (the rig and the tick rate cannot change inside one
+capture): radar rig, rate, warm-up per run, label / post-process, scene cleanup.
+**Stop** cuts the current run short, skips the rest, and still labels +
+post-processes what was recorded. Headless:
+
+```
+python run_fusion.py --campaign my_campaign.json
+```
+
+How it runs (`fusion/campaign.py`):
+
+1. Preflight heal, scene cleanup, sensor rig: once.
+2. Capture starts once, in campaign mode (`DATASET_CAMPAIGN_CONTROL_DIR`). It
+   owns the tick for the whole campaign but records only the frame windows the
+   orchestrator opens; between them radar returns, camera frames and actor
+   frames are dropped at the listen callbacks
+   (`dataset/capture/campaign_control.py`).
+3. Per run: sweep every vehicle and pedestrian (never sensors) and verify the
+   world is empty (`clear_carla_actors.py --walkers --verify`); start
+   `traffic/runner.py` for that run; its `--status-file` reports the CARLA frame
+   of its first SUMO step; the recording window is `[first + warm-up,
+   first + warm-up + duration)` in capture frames, so every run records exactly
+   its duration and never its warm-up or the cleanup gap; when the capture has
+   ticked past the window the runner is ended through `--stop-file` (it
+   unmirrors its actors) and the world is swept again.
+4. Then the capture is told to stop and labels + post-processes the combined
+   capture in child processes. The sensor rig is stopped and CARLA is healed to
+   async.
+
+A failed run (runner crash, no first tick, world not clean after two sweeps)
+is marked failed and skipped; frames it already recorded stay, marked
+`truncated`.
+
+Outputs added to the capture folder:
+
+| File | Content |
+|---|---|
+| `segments.json` | actual recorded frame range + all settings of every run (`complete` / `truncated`) |
+| `campaign.json`, `campaign_plan.json` | the plan, each row's outcome, the runners' final status |
+| `radar_data_labeled.csv` | + `segment_id`, `scenario_id` columns |
+| `camera_data.csv` | + `segment_id` column |
+| `actor_frames.jsonl` | + `"segment"` per record |
+| `radar_labeling_qa/segment_summary.{csv,md}` | per run: returns, return classes, match rate, unique actors |
+| `radar_labeling_qa/segment_doppler.csv` | per run: visibility, actor radial speed, moving fraction |
+
+Fixes made along the way: `carla_cleanup.destroy_all_vehicles` no longer ticks
+the world when another process owns the clock (`DATASET_EXTERNAL_TICK=1`;
+`apply_batch_sync(..., True)` injected an extra tick at every runner start), and
+the single-run end-of-run sweep now removes pedestrians too.
+
 ## Traffic scenarios: validation, signal timing, routing (2026-09-18)
 
 `traffic/validate_scenarios.py` runs all 11 scenarios headless in SUMO (no CARLA),

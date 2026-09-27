@@ -336,7 +336,8 @@ def _best_effort_clear(cfg: FusionConfig, log) -> None:
     if not clr.is_file():
         return
     try:
-        subprocess.run([sys.executable, str(clr),
+        # --walkers: pedestrians used to survive this sweep.
+        subprocess.run([sys.executable, str(clr), "--walkers",
                         "--host", cfg.carla_host, "--port", str(cfg.carla_port)],
                        cwd=str(TRAFFIC_DIR), env=_base_env(cfg),
                        check=False, timeout=60)
