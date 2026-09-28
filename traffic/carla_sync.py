@@ -203,13 +203,12 @@ GROUND_PROBE_GRID_M = 0.25
 # get_waypoint() call per mirrored vehicle every frame.
 GROUND_CACHE_GRID_M = 2.0
 
-# Pedestrians are snapped onto the nearest CARLA Sidewalk lane when one is within
-# this distance. SUMO's own pedestrian network does not line up exactly with the
-# rendered sidewalk meshes, so trusting SUMO's raw x/y left walkers in the road,
-# off the kerb, or clipped into buildings. Beyond this distance (e.g. mid-
-# crossing, where no sidewalk lane exists) we keep the computed position.
-# Env-tunable: raise DATASET_PED_SNAP_MAX_M to pull more walkers onto the kerb,
-# set it to 0 to disable snapping entirely (trust SUMO's raw placement).
+# How far a locked CARLA sidewalk may sit from SUMO's position and still be the
+# pavement we keep. SUMO's sidewalk lanes do not match the rendered meshes, so
+# the mirror looks up the sidewalk from the pavement already locked plus the
+# step just taken, and refuses a different sidewalk lane while the lock is
+# inside this distance. The body then walks toward that point; it is not
+# teleported. Set DATASET_PED_SNAP_MAX_M to 0 to trust SUMO's raw x/y.
 def _ped_snap_max_m():
     raw = os.environ.get("DATASET_PED_SNAP_MAX_M", "").strip()
     if raw:
@@ -217,22 +216,15 @@ def _ped_snap_max_m():
             return max(0.0, float(raw))
         except ValueError:
             pass
-    # 3 m (was 6): a walker stepping off the kerb onto a crossing is no longer
-    # dragged 6 m sideways back onto the pavement. Walkers that SUMO reports on
-    # a crossing or walkingarea lane are never snapped at all (see
-    # _person_transform), so this only affects sidewalk lanes.
     return 3.0
 
 PED_SNAP_MAX_M = _ped_snap_max_m()
 
 from pedestrian_path import (  # noqa: E402
-    blend_crossing,
-    choose_sidewalk_point,
-    is_crossing_lane,
+    crossing_will_be_real,
+    next_pose,
+    sidewalk_query_point,
 )
-
-PED_SNAP_CONTINUITY_M = 2.0
-PED_CROSS_BLEND_M = 4.0
 
 # Centre of the CARLA render radius (monitored-stretch midpoint in CARLA
 # world coords) and default radius. SUMO simulates the WHOLE city so traffic
@@ -297,7 +289,7 @@ class CarlaSyncManager:
         self._ped_z_logged     = False
         self._ped_ground_cache = {}
         self._ped_half_height  = {}   # pid -> bounding_box.extent.z of its walker
-        self._ped_sidewalk     = {}   # pid -> last sidewalk point locked onto
+        self._ped_state        = {}   # pid -> locked sidewalk, rendered pose, crossing ticks
         self._veh_ground_cache = {}   # grid cell -> ground z (vehicle Z cache)
         self._ped_snap_cache   = {}   # grid cell -> (x, y, z) snapped ped pose
         self._spawn_count   = 0
@@ -530,6 +522,7 @@ class CarlaSyncManager:
                 pass
         self._actors.clear()
         self._ped_actors.clear()
+        self._ped_state.clear()
         self._vtype_map.clear()
         self._delta_logged.clear()
 
@@ -865,30 +858,41 @@ class CarlaSyncManager:
         return z
 
     def _person_transform(self, pid: str) -> carla.Transform:
-        """SUMO's pedestrian network does not line up exactly with CARLA's
-        rendered sidewalk meshes, so trusting SUMO's raw x/y left walkers off the
-        kerb, out in the road, or clipped into buildings. We snap each walker onto
-        the nearest CARLA Sidewalk lane when one is close enough, then resolve the
-        ground height by raycast so they stand ON the pavement instead of buried
-        in it. Snap + ground results are grid-cached to keep the per-step cost off
-        the world tick."""
+        """Place a walker on the CARLA pavement they are already on, then walk.
+
+        The sidewalk lookup starts at the locked point plus the step SUMO just
+        took, so a raw position in the road cannot nominate the pavement across
+        the street. A different sidewalk lane is refused while the lock is still
+        close. Once a crossing has lasted more than a flicker, the target is
+        SUMO's position and the body steps toward it by at most the distance
+        walked this tick. Heading follows that step; a person waiting at a light
+        keeps both position and heading. Ground height is the raycast at the
+        rendered point.
+        """
         x, y = traci.person.getPosition(pid)
         heading = traci.person.getAngle(pid)
-        cx, cy, yaw = sumo_to_carla_xy_yaw(x, y, heading)
+        cx, cy, sumo_yaw = sumo_to_carla_xy_yaw(x, y, heading)
         try:
             lane = traci.person.getLaneID(pid)
         except traci.TraCIException:
             lane = ""
-        locked = self._ped_sidewalk.get(pid)
-        if is_crossing_lane(lane):
-            sx, sy = blend_crossing((cx, cy), locked, PED_CROSS_BLEND_M)
-        else:
-            nearest = self._nearest_sidewalk(cx, cy)
-            chosen = choose_sidewalk_point(
-                (cx, cy), nearest, locked, PED_SNAP_MAX_M, PED_SNAP_CONTINUITY_M)
-            if chosen != (cx, cy):
-                self._ped_sidewalk[pid] = chosen
-            sx, sy = chosen
+        state = self._ped_state.get(pid)
+        raw = (cx, cy)
+        nearest = None
+        nearest_lane = None
+        if not crossing_will_be_real(state, lane):
+            qx, qy = sidewalk_query_point(
+                raw,
+                None if state is None else state.get("locked"),
+                None if state is None else state.get("prev_raw"),
+            )
+            found = self._nearest_sidewalk(qx, qy)
+            if found is not None:
+                nearest = (found[0], found[1])
+                nearest_lane = (found[2], found[3])
+        sx, sy, yaw, state = next_pose(
+            raw, sumo_yaw, lane, nearest, nearest_lane, state, PED_SNAP_MAX_M)
+        self._ped_state[pid] = state
         half = self._ped_half_height.get(pid, PED_DEFAULT_HALF_HEIGHT)
         return carla.Transform(
             carla.Location(x=sx, y=sy, z=self._pedestrian_ground_z(sx, sy) + half),
@@ -896,7 +900,12 @@ class CarlaSyncManager:
         )
 
     def _nearest_sidewalk(self, cx: float, cy: float):
-        """Closest CARLA sidewalk point within PED_SNAP_MAX_M, or None."""
+        """Sidewalk point at the lookup, as (x, y, road_id, lane_id), or None.
+
+        ``(cx, cy)`` is the locked pavement plus this tick's step, not SUMO's
+        raw position. The lane id is what lets the walker refuse the pavement
+        across the street. Cached per grid cell of that lookup point.
+        """
         if PED_SNAP_MAX_M <= 0:
             return None
         key = (round(cx / GROUND_PROBE_GRID_M), round(cy / GROUND_PROBE_GRID_M))
@@ -912,7 +921,7 @@ class CarlaSyncManager:
             if wp is not None:
                 loc = wp.transform.location
                 if math.hypot(loc.x - cx, loc.y - cy) <= PED_SNAP_MAX_M:
-                    found = (loc.x, loc.y)
+                    found = (loc.x, loc.y, wp.road_id, wp.lane_id)
         except Exception:
             pass
         self._ped_snap_cache[key] = found
@@ -970,4 +979,4 @@ class CarlaSyncManager:
             pass
         self._ped_actors.pop(pid, None)
         self._ped_half_height.pop(pid, None)
-        self._ped_sidewalk.pop(pid, None)
+        self._ped_state.pop(pid, None)
