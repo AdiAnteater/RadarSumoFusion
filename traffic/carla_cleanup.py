@@ -25,7 +25,22 @@ are NEVER touched, so this is safe to run while the capture rig is set up.
 import carla
 
 
-def destroy_all_vehicles(client, world, include_walkers=False, verbose=True):
+def _default_do_tick() -> bool:
+    """Tick after the batch only when nobody else owns the clock.
+
+    In a fused / campaign run the capture process owns world.tick() and every
+    other client sets DATASET_EXTERNAL_TICK=1. apply_batch_sync(batch, True)
+    TICKS the world in synchronous mode, i.e. a second ticker would inject extra
+    frames into the capture's clock (every runner start and every campaign
+    cleanup did this). With an external ticker the destroys are applied on the
+    capture's next tick anyway.
+    """
+    import os
+    return os.environ.get("DATASET_EXTERNAL_TICK", "").strip() not in ("1", "true", "yes")
+
+
+def destroy_all_vehicles(client, world, include_walkers=False, verbose=True,
+                         do_tick=None):
     """Destroy every vehicle actor in the world (batched). Returns the count.
 
     include_walkers=True also stops walker AI controllers and destroys both
@@ -58,7 +73,7 @@ def destroy_all_vehicles(client, world, include_walkers=False, verbose=True):
 
     # apply_batch_sync with do_tick=True guarantees the destroys are applied
     # before we return, even if no one else is ticking the world right now.
-    client.apply_batch_sync(batch, True)
+    client.apply_batch_sync(batch, _default_do_tick() if do_tick is None else bool(do_tick))
 
     if verbose:
         msg = f"[cleanup] Removed {len(vehicles)} vehicle(s)"

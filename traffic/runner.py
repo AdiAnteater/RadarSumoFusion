@@ -52,6 +52,7 @@ import os
 import sys
 import re
 import argparse
+import json
 import tempfile
 import subprocess
 import time
@@ -79,6 +80,13 @@ try:
     AMBIENT_AVAILABLE = True
 except ImportError:
     AMBIENT_AVAILABLE = False
+
+# --- Corridor-priority signal programs (see stretch_signals.py) ---
+try:
+    import stretch_signals
+    SIGNALS_AVAILABLE = True
+except ImportError:
+    SIGNALS_AVAILABLE = False
 
 # Centre of the CARLA render radius and its default size (see carla_sync).
 RENDER_RADIUS_DEFAULT = 120.0
@@ -142,6 +150,17 @@ def density_to_vph(density_slider: int) -> int:
     min_vph = 50
     max_vph = 900
     return int(min_vph + (max_vph - min_vph) * (density_slider - 1) / 99)
+
+
+# Scenarios 2 and 3 share the free-flow slider but are supposed to be heavier.
+# Applied on top of density_to_vph so the same slider value is a different demand.
+SCENARIO_DEMAND_SCALE = {2: 1.5, 3: 2.0}
+
+
+def scenario_vph(scenario_id: int, slider_vph: int) -> int:
+    """Vehicles per hour per direction after the scenario's demand scale."""
+    scale = SCENARIO_DEMAND_SCALE.get(scenario_id, 1.0)
+    return max(1, int(round(slider_vph * scale)))
 
 
 def build_density_map(vph: int, direction: str) -> dict:
@@ -270,7 +289,10 @@ def write_sumocfg(net_file: str, route_file: str, add_files: list,
     processing = [
         '    <processing>',
         '        <collision.action value="warn"/>',
-        '        <time-to-teleport value="60"/>',
+        # 150 s (was 60): with the 90 s corridor-priority phase a side-street
+        # vehicle can legitimately wait ~95 s for its turn; at 60 s SUMO was
+        # teleporting them ("waited too long (yield)") out of the side streets.
+        '        <time-to-teleport value="150"/>',
         '        <lanechange.duration value="3"/>',
         # route-steps -1 loads the ENTIRE route file up front instead of
         # streaming it in 200 s windows. This is not a tuning knob, it fixes
@@ -374,10 +396,16 @@ class StopAndGoController(ScenarioController):
     # have turned 15 s stop/go into 7.5 s. Everything here is now keyed off
     # simulation time, so the scenario means the same thing at any step length.
 
+    # How long a seed is held at 0 once it enters the stretch. The old global
+    # 15 s clock often had the seed cross entirely during a "go" phase, so
+    # stop-and-go ran smoother than free flow.
+    HOLD_SECONDS = 12.0
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._held    = set()
+        self._hold_until = {}   # vid -> sim time when the hold ends
         self._entered = set()
+        self._released = set()
 
     def step(self):
         self.step_count += 1
@@ -391,20 +419,22 @@ class StopAndGoController(ScenarioController):
             if not vid.startswith("shockwave_seed_"):
                 continue
             road = traci.vehicle.getRoadID(vid)
-            if road in MONITORED_EDGES:
+            if road in MONITORED_EDGES and vid not in self._released:
                 if vid not in self._entered:
                     self._entered.add(vid)
+                    self._hold_until[vid] = now + self.HOLD_SECONDS
                     print(f"[StopAndGo] {vid} entered stretch (edge {road}) "
-                          f"at t={now:.1f}s")
-                phase = int(now // self.CYCLE_SECONDS) % 2
-                if phase == 0:
+                          f"at t={now:.1f}s; holding {self.HOLD_SECONDS:.0f}s")
+                if now < self._hold_until.get(vid, now):
                     traci.vehicle.setSpeed(vid, self.STOP_SPEED)
                 else:
-                    traci.vehicle.setSpeed(vid, -1)   # back to car-following
-                self._held.add(vid)
-            elif vid in self._held:
+                    traci.vehicle.setSpeed(vid, -1)
+                    self._released.add(vid)
+                    self._hold_until.pop(vid, None)
+            elif vid in self._hold_until:
                 traci.vehicle.setSpeed(vid, -1)
-                self._held.discard(vid)
+                self._hold_until.pop(vid, None)
+                self._released.add(vid)
 
 
 class BottleneckController(ScenarioController):
@@ -478,108 +508,292 @@ class BottleneckController(ScenarioController):
 
 
 class OcclusionController(ScenarioController):
-    """Scenario 11: matches paired truck/car speeds so the car stays hidden
-    beside the truck while both cross the monitored stretch.
+    """Scenario 11: keeps each paired car hidden beside its truck while both
+    cross the monitored stretch.
 
-    The previous version built ids as occ_pair_NB_* / occ_pair_SB_*, but
-    s11_occlusion.rou.xml defines occ_pair_WB_* / occ_pair_EB_*. No id ever
-    matched, so the controller never touched a vehicle and scenario 11 produced
-    ordinary traffic.
+    History: the first version matched ids that did not exist (NB/SB instead
+    of WB/EB), the second only locked the pair once BOTH were already on the
+    stretch. That worked only because signal queuing kept them together; with
+    corridor-priority signals the car (13.9 m/s) leaves the truck (11.1 m/s)
+    ~50 m behind on the 130 m approach and the pair never meets on the
+    stretch (headless validation: 1 of 4 pairs locked). A 0.6 m/s nudge cannot
+    close a gap that opens on the 130 m approach.
 
-    Both overrides are confined to the stretch and explicitly released on exit:
-
-      - setSpeed() disables the car's safety checks, so holding it across the
-        whole 357 m route would risk a rear-end collision out in the city where
-        the occlusion does not matter anyway.
-      - setLaneChangeMode(0) blocks the STRATEGIC lane changes each vehicle
-        needs to follow its own route. Left set after the stretch it produced
-            Warning: Teleporting vehicle 'occ_pair_wb_car_1'; waited too long
-            (wrong lane), lane='18_3', time=173.20
-        so the mode is restored to SUMO's default on exit.
+    The lead vehicle is now held until the pair is side by side (route
+    distance), then both run at the truck's speed. On the stretch both get
+    lane changing disabled so the car stays in the inner lane beside the truck.
+    Background truck/car flows are not part of the scenario; only the named
+    pairs are paired.
     """
 
     DIRECTIONS      = ("wb", "eb")
     MAX_PAIRS       = 10
-    CHECK_INTERVAL_S = 1.0
-    # SUMO's documented default lane change mode. setLaneChangeMode(0) disables
-    # every kind of change including strategic; this restores normal behaviour.
     DEFAULT_LC_MODE = 1621
+    ALIGN_TOL_M     = 1.5
+    HOLD_GAP_M      = 18.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._matched   = set()
-        self._next_check = 0.0
+        self._matched = set()
+        self._ever_matched = set()
+        self._shepherded = set()
+        self._car_max = {}
+        self._both_seen = set()
+        self._holding = set()
 
     def _release(self, truck_id, car_id, vehicles):
-        for vid, restore_speed in ((car_id, True), (truck_id, False)):
+        for vid in (car_id, truck_id):
             if vid not in vehicles:
                 continue
             try:
-                if restore_speed:
-                    traci.vehicle.setSpeed(vid, -1)
                 traci.vehicle.setLaneChangeMode(vid, self.DEFAULT_LC_MODE)
+                traci.vehicle.setSpeed(vid, -1)
             except traci.TraCIException:
                 pass
+        if car_id in vehicles and car_id in self._shepherded:
+            try:
+                traci.vehicle.setMaxSpeed(car_id, self._car_max.get(car_id, 16.67))
+            except traci.TraCIException:
+                pass
+        self._shepherded.discard(car_id)
+        self._holding.discard(car_id)
 
     def step(self):
         self.step_count += 1
         try:
-            now = traci.simulation.getTime()
-        except traci.TraCIException:
-            return
-        # Was "step_count % 10", i.e. every 1 s only at a 0.1 s step length.
-        # Keyed off simulation time so --step-length cannot change the rate at
-        # which pairs are re-matched.
-        if now < self._next_check:
-            return
-        self._next_check = now + self.CHECK_INTERVAL_S
-        try:
             vehicles = set(traci.vehicle.getIDList())
         except traci.TraCIException:
             return
-
         for i in range(1, self.MAX_PAIRS):
             for direction in self.DIRECTIONS:
                 truck_id = f"occ_pair_{direction}_truck_{i}"
                 car_id   = f"occ_pair_{direction}_car_{i}"
-                pair_live = truck_id in vehicles and car_id in vehicles
-
-                if not pair_live:
-                    # One of the pair has despawned -- make sure the survivor
-                    # does not keep a frozen speed or a disabled lane changer.
-                    if car_id in self._matched:
+                if not (truck_id in vehicles and car_id in vehicles):
+                    if car_id in self._matched or car_id in self._shepherded or car_id in self._holding:
                         self._release(truck_id, car_id, vehicles)
                         self._matched.discard(car_id)
                     continue
-
-                # BOTH must be on the stretch, not either. With "or", a car
-                # that had already moved on to edge 18 stayed frozen at the
-                # truck's speed with its lane changer disabled because the
-                # truck was still back on edge 20, which produced
-                #     Warning: Teleporting vehicle 'occ_pair_wb_car_1'; waited
-                #     too long (wrong lane), lane='18_3', time=173.20
-                # The pair only needs to be locked together while they are
-                # actually in front of the sensors anyway.
-                on_stretch = (traci.vehicle.getRoadID(truck_id) in MONITORED_EDGES
-                              and traci.vehicle.getRoadID(car_id) in MONITORED_EDGES)
-                if on_stretch:
-                    if car_id not in self._matched:
-                        self._matched.add(car_id)
-                        traci.vehicle.setLaneChangeMode(car_id, 0)
-                        traci.vehicle.setLaneChangeMode(truck_id, 0)
-                        print(f"[Occlusion] pairing {truck_id} / {car_id} "
-                              f"at t={now:.1f}s")
-                    traci.vehicle.setSpeed(car_id, traci.vehicle.getSpeed(truck_id))
-                elif car_id in self._matched:
+                self._both_seen.add(car_id)
+                try:
+                    truck_road = traci.vehicle.getRoadID(truck_id)
+                    car_road = traci.vehicle.getRoadID(car_id)
+                    truck_lane = traci.vehicle.getLaneIndex(truck_id)
+                    car_lane = traci.vehicle.getLaneIndex(car_id)
+                    v_truck = traci.vehicle.getSpeed(truck_id)
+                    gap = traci.vehicle.getDistance(car_id) - traci.vehicle.getDistance(truck_id)
+                except traci.TraCIException:
+                    continue
+                if car_id in self._matched and (truck_road not in MONITORED_EDGES
+                                                 or car_road not in MONITORED_EDGES):
                     self._release(truck_id, car_id, vehicles)
                     self._matched.discard(car_id)
+                    continue
+                # Same lane: the trailer is queued behind the leader, so freezing
+                # the leader traps it. Hold only once they are side by side in
+                # different lanes (or on different edges) and one has pulled ahead.
+                side_by_side = truck_road != car_road or truck_lane != car_lane
+                apart = side_by_side and abs(gap) > (
+                    self.ALIGN_TOL_M if car_id in self._holding else self.HOLD_GAP_M)
+                leader = car_id if gap > 0 else truck_id
+                trailer = truck_id if leader == car_id else car_id
+                if apart:
+                    try:
+                        if traci.vehicle.getSpeed(trailer) < 0.3 and abs(gap) < self.HOLD_GAP_M + 10:
+                            apart = False
+                    except traci.TraCIException:
+                        pass
+                try:
+                    if apart:
+                        traci.vehicle.setSpeed(leader, 0.0)
+                        traci.vehicle.setSpeed(trailer, -1)
+                        self._holding.add(car_id)
+                    else:
+                        traci.vehicle.setSpeed(leader, -1)
+                        traci.vehicle.setSpeed(trailer, -1)
+                        self._holding.discard(car_id)
+                        if car_id not in self._shepherded:
+                            try:
+                                self._car_max[car_id] = traci.vehicletype.getMaxSpeed(
+                                    traci.vehicle.getTypeID(car_id).split("@", 1)[0])
+                            except traci.TraCIException:
+                                self._car_max[car_id] = 16.67
+                            self._shepherded.add(car_id)
+                        traci.vehicle.setMaxSpeed(
+                            car_id, min(max(v_truck, 0.3), self._car_max.get(car_id, 16.67)))
+                except traci.TraCIException:
+                    continue
+                if (not apart and truck_road in MONITORED_EDGES
+                        and car_road in MONITORED_EDGES and car_id not in self._matched):
+                    self._matched.add(car_id)
+                    self._ever_matched.add(car_id)
+                    for vid in (car_id, truck_id):
+                        try:
+                            traci.vehicle.setLaneChangeMode(vid, 0)
+                        except traci.TraCIException:
+                            pass
+                    print(f"[Occlusion] pairing {truck_id} / {car_id} on the stretch "
+                          f"at t={traci.simulation.getTime():.1f}s")
+
+    def on_stop(self):
+        try:
+            vehicles = set(traci.vehicle.getIDList())
+        except traci.TraCIException:
+            return
+        for i in range(1, self.MAX_PAIRS):
+            for direction in self.DIRECTIONS:
+                self._release(f"occ_pair_{direction}_truck_{i}",
+                              f"occ_pair_{direction}_car_{i}", vehicles)
+
+
+class SlowLeaderController(ScenarioController):
+    """Scenarios 7, 9, 10: make the overtaking happen IN FRONT OF THE SENSORS.
+
+    Headless validation (validate_scenarios.py) showed zero lane changes on the
+    monitored stretch in all three overtaking scenarios: the slow/fast mix does
+    produce lane changes, but on the 130 m / 97 m approach edges (-1, -5), so by
+    the time a platoon reaches the 55 m stretch it is already sorted and the
+    "aggressive" cars simply follow. Lane connectivity after the stretch also
+    pins each vehicle to its lane there (see ambient_traffic.WB_ROUTE_ALT_EDGES),
+    so a vehicle cannot change lanes on the stretch and change back. To make
+    the manoeuvre visible anyway, an aggressive car queued behind a slow leader
+    in the curb lane is sent to the inner lane and its route is switched to the
+    inner-lane exit, so it does not have to change back on the short edges
+    after the stretch. Slow leaders are held in the curb lane while they are
+    capped.
+    """
+
+    SLOW_TYPE = "car_slow"
+    AGGRESSIVE_TYPE = "car_aggressive"
+    SLOW_ON_STRETCH_MPS = {7: 5.0, 9: 4.0, 10: 4.0}
+    CAP_DECEL_MPS2 = 2.0
+    CURB_LANE = 3
+    INNER_LANE = 4
+    # Edge on the stretch -> route whose exit matches the inner lane.
+    INNER_ROUTE = {"20": "WB_route", "-20": "EB_route_alt"}
+    LC_SECONDS = 6.0
+    BEHIND_M = 30.0
+    CLEAR_BEHIND_M = 6.0
+    CLEAR_AHEAD_M = 18.0
+    DEFAULT_LC_MODE = 1621
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._capped = {}
+        self._type_max = {}
+        self._base_type = {}
+        self._changed = set()
+
+    def _restore_speed(self, vid):
+        entry = self._capped.pop(vid, None)
+        if entry is None:
+            return
+        try:
+            traci.vehicle.setMaxSpeed(vid, self._type_max[entry[0]])
+            traci.vehicle.setLaneChangeMode(vid, self.DEFAULT_LC_MODE)
+        except traci.TraCIException:
+            pass
+
+    def _inner_clear(self, road, pos):
+        try:
+            ids = traci.lane.getLastStepVehicleIDs(f"{road}_{self.INNER_LANE}")
+        except traci.TraCIException:
+            return False
+        for other in ids:
+            try:
+                other_pos = traci.vehicle.getLanePosition(other)
+            except traci.TraCIException:
+                continue
+            if pos - self.CLEAR_BEHIND_M <= other_pos <= pos + self.CLEAR_AHEAD_M:
+                return False
+        return True
+
+    def step(self):
+        self.step_count += 1
+        try:
+            vehicles = traci.vehicle.getIDList()
+        except traci.TraCIException:
+            return
+        cap = self.SLOW_ON_STRETCH_MPS.get(self.scenario_id, 4.0)
+        live = set(vehicles)
+        for vid in list(self._capped):
+            if vid not in live:
+                self._capped.pop(vid, None)
+        if len(self._base_type) > 4 * max(len(live), 1) + 64:
+            self._base_type = {k: v for k, v in self._base_type.items() if k in live}
+        slow_ahead = {edge: [] for edge in MONITORED_EDGES}
+        for vid in vehicles:
+            vtype = self._base_type.get(vid)
+            if vtype is None:
+                try:
+                    # setMaxSpeed gives the vehicle a private type copy named
+                    # "<type>@<vid>"; compare on the base name. Cached per
+                    # vehicle so the per-step TraCI cost stays small.
+                    vtype = traci.vehicle.getTypeID(vid).split("@", 1)[0]
+                except traci.TraCIException:
+                    continue
+                self._base_type[vid] = vtype
+            if vtype != self.SLOW_TYPE:
+                continue
+            road = traci.vehicle.getRoadID(vid)
+            on = road in MONITORED_EDGES
+            if on:
+                if vtype not in self._type_max:
+                    self._type_max[vtype] = traci.vehicletype.getMaxSpeed(vtype)
+                # Ramp the cap down at a comfortable 2 m/s^2 instead of clamping
+                # (an instant clamp is logged by SUMO as emergency braking).
+                cur = traci.vehicle.getSpeed(vid)
+                dt = traci.simulation.getDeltaT()
+                target = max(cap, cur - self.CAP_DECEL_MPS2 * dt)
+                if vid not in self._capped or target != self._capped[vid][1]:
+                    traci.vehicle.setMaxSpeed(vid, target)
+                    self._capped[vid] = (vtype, target)
+                    try:
+                        traci.vehicle.setLaneChangeMode(vid, 0)
+                    except traci.TraCIException:
+                        pass
+                try:
+                    if traci.vehicle.getLaneIndex(vid) == self.CURB_LANE:
+                        slow_ahead[road].append(traci.vehicle.getLanePosition(vid))
+                except traci.TraCIException:
+                    pass
+            elif vid in self._capped:
+                self._restore_speed(vid)
+        for vid in vehicles:
+            if self._base_type.get(vid) != self.AGGRESSIVE_TYPE or vid in self._changed:
+                continue
+            try:
+                road = traci.vehicle.getRoadID(vid)
+                if road not in MONITORED_EDGES or traci.vehicle.getLaneIndex(vid) != self.CURB_LANE:
+                    continue
+                pos = traci.vehicle.getLanePosition(vid)
+            except traci.TraCIException:
+                continue
+            if not any(0 < ahead - pos <= self.BEHIND_M for ahead in slow_ahead.get(road, ())):
+                continue
+            if not self._inner_clear(road, pos):
+                continue
+            try:
+                traci.vehicle.setRouteID(vid, self.INNER_ROUTE[road])
+                traci.vehicle.changeLane(vid, self.INNER_LANE, self.LC_SECONDS)
+                self._changed.add(vid)
+                print(f"[LaneChange] {vid} curb -> inner on {road} "
+                      f"via {self.INNER_ROUTE[road]} at t={traci.simulation.getTime():.1f}s")
+            except traci.TraCIException:
+                pass
+
+    def on_stop(self):
+        for vid in list(self._capped):
+            self._restore_speed(vid)
 
 
 def get_controller(scenario_id: int, duration: int) -> ScenarioController:
     """Return the appropriate controller for the scenario."""
     mapping = {
         4:  StopAndGoController,
+        7:  SlowLeaderController,
         8:  BottleneckController,
+        9:  SlowLeaderController,
+        10: SlowLeaderController,
         11: OcclusionController,
     }
     cls = mapping.get(scenario_id, ScenarioController)
@@ -605,7 +819,9 @@ def spawn_buses_with_stop(duration: int, interval: int = 120):
         bus_id = f"scheduled_bus_wb_{i}"
         traci.vehicle.add(
             vehID=bus_id,
-            routeID="WB_route",
+            # Curb-lane exit (18_3 -> -6): the bus dwells in lane 20_3 and must
+            # not have to cross to lane 4 within 19 m after the stop.
+            routeID="WB_route_alt",
             typeID="bus",
             depart=str(depart_time),
             departLane="first",
@@ -628,7 +844,9 @@ def run(scenario_id: int, density: int, duration: int,
         ambient_seed: int = 42, render_radius: float = RENDER_RADIUS_DEFAULT,
         cull: bool = True, extend_routes: bool = False,
         step_length: float = DEFAULT_STEP_LENGTH,
-        external_tick: bool = False, sync_timeout: float = 60.0):
+        external_tick: bool = False, sync_timeout: float = 60.0,
+        stretch_signals_mode: str = "green",
+        status_file: str = "", stop_file: str = ""):
 
     meta = SCENARIOS.get(scenario_id)
     if not meta:
@@ -738,7 +956,7 @@ def run(scenario_id: int, density: int, duration: int,
             sync.reset_to_async()
 
     # --- Build temporary files ---
-    vph         = density_to_vph(density)
+    vph         = scenario_vph(scenario_id, density_to_vph(density))
     density_map = build_density_map(vph, direction)
     route_tmpl  = os.path.join(ROUTES_DIR, meta["file"])
     route_file  = substitute_density(route_tmpl, density_map, duration)
@@ -812,6 +1030,13 @@ def run(scenario_id: int, density: int, duration: int,
     # (The CARLA sync manager was already created and started above so that
     # external-tick mode could read the world clock before this point.)
     traci.start(cmd)
+    # Corridor-priority signals: without this the imported two-phase programs
+    # queue traffic back over the 55 m stretch about half the time and every
+    # scenario degenerates into the same signal queue (see stretch_signals.py).
+    if stretch_signals_mode == "green" and SIGNALS_AVAILABLE:
+        stretch_signals.apply_corridor_priority(net_file)
+    elif stretch_signals_mode == "green":
+        print("WARNING: stretch_signals.py not importable; imported TLS programs left as-is.")
     controller = get_controller(scenario_id, duration)
     controller.on_start()
 
@@ -830,8 +1055,35 @@ def run(scenario_id: int, density: int, duration: int,
 
     print("Simulation running - press Ctrl+C to stop early.\n")
 
+    # Campaign hooks (fusion/campaign.py). status_file: JSON the orchestrator
+    # polls -- the CARLA frame of our first step places the scenario's
+    # recording window. stop_file: when it appears we end the scenario cleanly
+    # (finally-block unmirrors every actor), no console signal needed.
+    status = {"state": "starting", "scenario": scenario_id, "pid": os.getpid()}
+    last_status_t = 0.0
+
+    def _status(**kw):
+        nonlocal last_status_t
+        if not status_file:
+            return
+        status.update(kw)
+        last_status_t = time.monotonic()
+        tmp = status_file + f".tmp{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(status, f)
+            os.replace(tmp, status_file)
+        except OSError:
+            pass
+
+    steps_done = 0
+    exit_state = "done"
     try:
         while traci.simulation.getMinExpectedNumber() > 0:
+            if stop_file and steps_done % 5 == 0 and os.path.exists(stop_file):
+                print("[runner] stop requested by the campaign orchestrator.", flush=True)
+                exit_state = "stopped"
+                break
             if external_tick and sync is not None:
                 # Block until the capture process completes the next CARLA frame.
                 # One SUMO step per CARLA tick keeps the two clocks locked. We
@@ -849,6 +1101,17 @@ def run(scenario_id: int, density: int, duration: int,
             controller.step()
             if sync:
                 sync.step()
+            steps_done += 1
+            if status_file:
+                now_m = time.monotonic()
+                if steps_done == 1:
+                    _status(state="running",
+                            first_frame=getattr(sync, "last_frame", None) if sync else None,
+                            sim_time=traci.simulation.getTime())
+                elif now_m - last_status_t >= 1.0:
+                    _status(sim_time=traci.simulation.getTime(),
+                            carla_frame=getattr(sync, "last_frame", None) if sync else None,
+                            vehicles=traci.vehicle.getIDCount())
 
             if wall_pace:
                 next_deadline += step_length
@@ -861,10 +1124,16 @@ def run(scenario_id: int, density: int, duration: int,
                     next_deadline = time.monotonic()
     except KeyboardInterrupt:
         print("\nStopped by user.")
+        exit_state = "stopped"
+    except Exception as exc:  # noqa: BLE001
+        exit_state = "error"
+        _status(error=str(exc))
+        raise
     finally:
         controller.on_stop()
         if sync:
             sync.stop()
+        _status(state=exit_state, steps=steps_done)
         traci.close()
         for f in tmp_files:
             try:
@@ -929,6 +1198,16 @@ def main():
                              "fixed_delta_seconds as the SUMO step-length. Also "
                              "settable via DATASET_EXTERNAL_TICK=1. Omit for a "
                              "standalone SUMO-only visual run.")
+    parser.add_argument("--status-file", type=str, default="",
+                        help="Campaign mode: write run status JSON here (first CARLA "
+                             "frame, sim time, exit state).")
+    parser.add_argument("--stop-file", type=str, default="",
+                        help="Campaign mode: end the run cleanly when this file exists.")
+    parser.add_argument("--stretch-signals", type=str, default="green",
+                        choices=("green", "static"),
+                        help="green: corridor-priority signal programs on the boulevard "
+                             "lights (default). static: keep the imported two-phase "
+                             "programs (stretch queues ~half the time).")
     parser.add_argument("--sync-timeout", type=float, default=60.0,
                         help="Seconds to wait for the capture process to enable "
                              "sync mode, and per-frame tick timeout in external "
@@ -961,6 +1240,9 @@ def main():
         step_length=args.step_length,
         external_tick=external_tick,
         sync_timeout=args.sync_timeout,
+        stretch_signals_mode=args.stretch_signals,
+        status_file=args.status_file,
+        stop_file=args.stop_file,
     )
 
 

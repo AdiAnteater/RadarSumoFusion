@@ -17,3 +17,4 @@ The original per-component GUIs are preserved:
 """
 
 from .config import FusionConfig  # noqa: F401
+from .campaign import CampaignConfig, RunSpec, run_campaign  # noqa: F401

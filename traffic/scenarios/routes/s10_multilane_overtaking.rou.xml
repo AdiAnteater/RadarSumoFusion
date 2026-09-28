@@ -6,21 +6,21 @@
 
     <flow id="WB_slow_wave"
           type="car_slow" route="WB_route"
-          begin="0" end="3600" period="8"
+          begin="0" end="3600" period="18"
           departLane="random" departSpeed="0" arrivalSpeed="current"/>
 
     <flow id="WB_fast_wave"
           type="car_aggressive" route="WB_route"
-          begin="20" end="3600" period="6"
+          begin="20" end="3600" period="15"
           departLane="random" departSpeed="0" arrivalSpeed="current"/>
 
     <flow id="EB_slow_wave"
           type="car_slow" route="EB_route"
-          begin="0" end="3600" period="8"
+          begin="0" end="3600" period="18"
           departLane="random" departSpeed="0" arrivalSpeed="current"/>
 
     <flow id="EB_fast_wave"
           type="car_aggressive" route="EB_route"
-          begin="20" end="3600" period="6"
+          begin="20" end="3600" period="15"
           departLane="random" departSpeed="0" arrivalSpeed="current"/>
 </routes>

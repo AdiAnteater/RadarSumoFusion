@@ -119,6 +119,140 @@ angular-distance comparison that is an exact tie on a straight road, so the side
 was decided by floating-point noise (R5/R6/R8 faced west while the rest faced east
 in the 2026-09-17 captures).
 
+## Campaigns: several scenarios, one capture (2026-09-27)
+
+`fusion_gui.py` is now a campaign manager. A campaign is a list of runs (one
+traffic scenario each) recorded back to back into ONE `sensor_capture_*` folder:
+one radar CSV, one actor log, one camera stream, one labeling and one
+post-processing pass.
+
+GUI: the runs table starts empty. **Add run** opens the traffic settings
+(scenario, density with a veh/h hint, recorded duration, direction, ambient /
+pedestrian / bicycle sliders, seed, signal mode, note); **Confirm** adds the row.
+Edit (or double-click), Duplicate, Remove, Move up / down, Save / Load (JSON).
+The last campaign is restored on start (`.last_campaign.json`). Sensors and
+clock are campaign-wide (the rig and the tick rate cannot change inside one
+capture): radar rig, rate, warm-up per run, label / post-process, scene cleanup.
+**Stop** cuts the current run short, skips the rest, and still labels +
+post-processes what was recorded. Headless:
+
+```
+python run_fusion.py --campaign my_campaign.json
+```
+
+How it runs (`fusion/campaign.py`):
+
+1. Preflight heal, scene cleanup, sensor rig: once.
+2. Capture starts once, in campaign mode (`DATASET_CAMPAIGN_CONTROL_DIR`). It
+   owns the tick for the whole campaign but records only the frame windows the
+   orchestrator opens; between them radar returns, camera frames and actor
+   frames are dropped at the listen callbacks
+   (`dataset/capture/campaign_control.py`).
+3. Per run: sweep every vehicle and pedestrian (never sensors) and verify the
+   world is empty (`clear_carla_actors.py --walkers --verify`); start
+   `traffic/runner.py` for that run; its `--status-file` reports the CARLA frame
+   of its first SUMO step; the recording window is `[first + warm-up,
+   first + warm-up + duration)` in capture frames, so every run records exactly
+   its duration and never its warm-up or the cleanup gap; when the capture has
+   ticked past the window the runner is ended through `--stop-file` (it
+   unmirrors its actors) and the world is swept again.
+4. Then the capture is told to stop and labels + post-processes the combined
+   capture in child processes. The sensor rig is stopped and CARLA is healed to
+   async.
+
+A failed run (runner crash, no first tick, world not clean after two sweeps)
+is marked failed and skipped; frames it already recorded stay, marked
+`truncated`.
+
+Outputs added to the capture folder:
+
+| File | Content |
+|---|---|
+| `segments.json` | actual recorded frame range + all settings of every run (`complete` / `truncated`) |
+| `campaign.json`, `campaign_plan.json` | the plan, each row's outcome, the runners' final status |
+| `radar_data_labeled.csv` | + `segment_id`, `scenario_id` columns |
+| `camera_data.csv` | + `segment_id` column |
+| `actor_frames.jsonl` | + `"segment"` per record |
+| `radar_labeling_qa/segment_summary.{csv,md}` | per run: returns, return classes, match rate, unique actors |
+| `radar_labeling_qa/segment_doppler.csv` | per run: visibility, actor radial speed, moving fraction |
+
+Fixes made along the way: `carla_cleanup.destroy_all_vehicles` no longer ticks
+the world when another process owns the clock (`DATASET_EXTERNAL_TICK=1`;
+`apply_batch_sync(..., True)` injected an extra tick at every runner start), and
+the single-run end-of-run sweep now removes pedestrians too.
+
+## Traffic scenarios: validation, signal timing, routing (2026-09-18)
+
+`traffic/validate_scenarios.py` runs all 11 scenarios headless in SUMO (no CARLA),
+with the real scenario controllers and the city layer, and reports what happens on
+the monitored stretch: vehicles crossed, occupancy, mean speed, stopped fraction,
+lane changes, passing events, pedestrians/bicycles, teleports, collisions, SUMO
+warnings, and whether each scenario's mechanism fired (shockwave seeds held, bus
+dwelling at BS_main, blocker parked on 20_3, occlusion pairs locked). It writes
+`validation_report.md/.json` (the committed copy is density 60, BOTH, 240 s,
+ambient 30 / ped 20 / bike 10, seed 42). Run it after any change to the net,
+routes, controllers or signals:
+
+```
+python traffic/validate_scenarios.py                 # all 11
+python traffic/validate_scenarios.py --scenarios 4 8 11 --duration 300
+```
+
+What that validation found, and what changed because of it:
+
+1. **Signals masked every scenario.** The stretch (55 m) sits between lights 532
+   (25 m west) and 189 (at its east end), with 719 another 19 m on. The imported
+   two-phase programs gave the corridor ~34 s green per 100 s at each light, so a
+   red at any of them queued traffic back across the whole stretch: all 11
+   scenarios, "free flow" included, ran at ~1.3 m/s with vehicles stopped ~70% of
+   the time, and 82% of vehicle-frames in capture 20260917_215125 were stationary.
+   `traffic/stretch_signals.py` (runner `--stretch-signals green`, the default) now
+   re-times the imported programs (state strings and phase order are kept, so the
+   junction logic stays valid): the through lights 189/719 get a long corridor
+   phase, the split light 532 (the corridor turns there, so westbound entry and
+   eastbound exit sit in different phases) gets a short balanced cycle, the
+   eastbound right-turn exit is permitted (yielding, with amber) during the entry
+   phase, through lights run at exactly twice the split cycle and are offset so
+   their red falls between the platoons 532 releases. Result at density 60: free
+   flow 8-9.5 m/s, 10-30% stopped, zero teleports/collisions. `--stretch-signals
+   static` restores the old behaviour for comparison.
+2. **One usable lane per direction.** After the stretch, lane 3 (curb) only leads
+   to exit -6 (WB) / 2 (EB) and lane 4 only to 5 (WB) / -3 (EB), with 9-25 m to
+   sort it out, so with a single exit route SUMO pulled every vehicle into one lane
+   ON the stretch and no overtaking could happen there (0 lane changes in the
+   overtaking scenarios, dozens on the 100 m approach edges). `ambient_traffic.py`
+   now defines a second exit per direction (`WB_route_alt`, `EB_route_alt`) and
+   50/50 (WB) / 75/25 (EB) route distributions; flows and vehicles pinned to a
+   lane (departLane first/last/3/4) get the matching exit, buses take the curb
+   exit. Overtaking on this block is a between-lanes speed differential, not a
+   lane change: `SlowLeaderController` (scenarios 7/9/10) ramps `car_slow`
+   vehicles down to 4-5 m/s on the stretch so the inner lane passes them in view
+   (`stretch_passes` in the report).
+3. **Occlusion pairs never met** under free flow (car 13.9 m/s vs truck 11.1 m/s
+   separate on the approach). `OcclusionController` now shepherds the car's max
+   speed to the truck's from departure and lane-locks both on the stretch.
+4. `time-to-teleport` 60 -> 150 s (side-street vehicles legitimately wait through
+   the long corridor phase).
+
+Density notes: the slider sets veh/h per direction identically for every scenario;
+"heavy demand" and "stop-and-go" only differ from "free flow" through their vehicle
+mix and controllers, so run them at density 80-100 and free flow at 30-50. The
+westbound entry at 532 is a single lane (-1_4 -> -2_4 -> 21), so westbound demand
+above ~500 veh/h backs up out of view (reported as `insertion_backlog_at_end`).
+
+## Pedestrians (2026-09-18)
+
+A CARLA walker's transform is the centre of its capsule (bounding_box.extent.z =
+0.93 m adult, 0.55-0.65 m child), not its feet. The mirror placed every walker at
+surface + 0.5 m, so adults stood 0.43 m deep in the pavement. `carla_sync.py` now
+places each walker at surface + its own extent.z (read from the spawned actor).
+The ground raycast only accepts ground-like hit labels (road, sidewalk, ground,
+terrain...): a ray landing on a car roof or a bus shelter used to be cached as
+the pavement height, so walkers near cars popped up and down. Walkers that SUMO
+reports on a crossing or walkingarea are no longer snapped back onto the sidewalk
+(default snap distance 6 -> 3 m), which removed the back-and-forth at the kerb in
+front of waiting cars.
+
 ## Radar labeling: what the numbers mean (2026-09-17 diagnosis)
 
 Capture `sensor_capture_20260917_125123` re-analysed against exact OBB geometry
