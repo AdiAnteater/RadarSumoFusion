@@ -788,6 +788,24 @@ def sync_fixed_delta_s_from_env() -> float:
     return tick if tick > 0 else RADAR_SENSOR_TICK_S
 
 
+def sync_min_period_s_from_env() -> float:
+    """Minimum wall-clock gap between ``world.tick()`` calls.
+
+    Simulation time still advances by ``fixed_delta_seconds`` every tick. This
+    only stops a fast machine from ticking faster than the radar CSV writer
+    can drain, which otherwise overflows the per-radar deque and drops
+    measurements. Unset or 0 keeps the previous behavior (tick as soon as
+    CARLA returns). ``DATASET_SYNC_MIN_PERIOD_S``.
+    """
+    raw = os.environ.get("DATASET_SYNC_MIN_PERIOD_S", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, min(float(raw), 1.0))
+    except ValueError:
+        return 0.0
+
+
 def radar_watchdog_stale_ticks_from_env() -> int:
     """Number of world ticks a single radar can fall behind its peers before the
     watchdog re-attaches its ``listen()`` callback. Capture 231410 lost R7 after
@@ -2591,6 +2609,13 @@ def main():
     # phase in async mode), enabling instantaneous multi-radar fusion on a
     # single frame_id. Default off so legacy async captures still work unchanged.
     sync_mode = sync_mode_from_env()
+    sync_min_period_s = sync_min_period_s_from_env() if sync_mode else 0.0
+    if sync_min_period_s > 0:
+        print(
+            f"[capture] tick wall-clock floor {sync_min_period_s:.3f}s "
+            "(DATASET_SYNC_MIN_PERIOD_S); simulation step is unchanged.",
+            flush=True,
+        )
     original_world_settings = world.get_settings()
     sync_traffic_manager = None
     if sync_mode:
@@ -2986,9 +3011,14 @@ def main():
             # In async mode, yield to the OS so we don't busy-spin while the
             # radar consumer and listen callbacks run. In sync mode the loop
             # is rate-limited by world.tick(), which blocks until the server
-            # reports the frame complete.
+            # reports the frame complete. An optional min period keeps a fast
+            # server from outrunning the radar CSV writer.
             if not sync_mode:
                 time.sleep(0.005)
+            elif sync_min_period_s > 0 and last_tick_at is not None:
+                remain = sync_min_period_s - (time.monotonic() - last_tick_at)
+                if remain > 0:
+                    time.sleep(remain)
 
     finally:
         print("[capture] shutting down — running post-capture pipeline...", flush=True)
