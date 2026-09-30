@@ -119,6 +119,45 @@ RADAR_HIT_MATCH_MAX_MARGIN_M = 0.5
 # in capture 20260917_125123 (road returns 0.67-0.98 m from the car, z = 0).
 # Same as the primary margin now; raise deliberately via env if ever needed.
 RADAR_SINGLE_CANDIDATE_MAX_MARGIN_M = 0.5
+# Pedestrian tolerances (distance from the TRUE, un-inflated walker box). A walker
+# is ~0.4 m wide, so the vehicle tolerances (0.2 m inflation + 0.5 m margin =
+# 0.7 m) let sidewalk and facade returns next to a walker be labeled pedestrian.
+# Measured on capture 20260929_012142: of returns that far from a walker, the
+# share also hit in frames with NO actor nearby (i.e. static scene) is 4% inside
+# the box, 6-14% within 0.15 m, 25-36% at 0.15-0.3 m, 53-57% at 0.3-0.7 m.
+# 0.15 m keeps swinging arms/legs (mesh slightly outside the CARLA bbox) and
+# rejects the static scene around them. A/B on the same capture: share of
+# pedestrian labels that are static scene 24% -> 6% (the floor inside the box
+# itself is ~4-6%), pedestrian recall 100% -> 100%, vehicles unchanged.
+# Env: DATASET_PED_MATCH_MAX_DIST_M.
+PED_MATCH_MAX_DIST_M = 0.15
+# QA candidate bubble for pedestrians (vehicles keep RADAR_CANDIDATE_HIT_MAX_BBOX_MARGIN_M).
+# With the 2 m vehicle bubble, a walker on the boulevard sidewalk pulled facade /
+# shopfront returns into "with candidates", so "match rate given candidates" fell
+# to 22% for pedestrians although every true walker hit was labeled.
+PED_CANDIDATE_MAX_DIST_M = 0.5   # env: DATASET_PED_CANDIDATE_MAX_DIST_M
+
+
+def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            return max(lo, min(float(raw), hi))
+        except ValueError:
+            pass
+    return default
+
+
+def ped_match_max_dist_m() -> float:
+    return _env_float_clamped("DATASET_PED_MATCH_MAX_DIST_M", PED_MATCH_MAX_DIST_M, 0.0, 2.0)
+
+
+def ped_candidate_max_dist_m() -> float:
+    return _env_float_clamped("DATASET_PED_CANDIDATE_MAX_DIST_M", PED_CANDIDATE_MAX_DIST_M, 0.0, 5.0)
+
+
+def _is_pedestrian(actor_snapshot) -> bool:
+    return actor_snapshot.get("kind") == "pedestrian"
 # Backward-compatible alias for reports / CLI (near-surface threshold, not extent inflation).
 RADAR_HIT_MATCH_MAX_DISTANCE_M = RADAR_HIT_MATCH_MAX_MARGIN_M
 # Min |radial velocity| (m/s) to score a return. Default 0 includes parked/stalled actors.
@@ -1088,9 +1127,15 @@ def actor_snapshots_for_radar_detection(
 
     hit_loc = radar_detection_world_location(sensor_transform, detection)
     near_hit = []
+    ped_limit = min(hit_max_bbox_margin_m, ped_candidate_max_dist_m())
     for actor in candidates:
-        margin = actor_bbox_margin_m(world, hit_loc, actor)
-        if margin is not None and margin <= hit_max_bbox_margin_m:
+        if _is_pedestrian(actor):
+            margin = actor_bbox_margin_m(world, hit_loc, actor, inflation_m=0.0)
+            limit = ped_limit
+        else:
+            margin = actor_bbox_margin_m(world, hit_loc, actor)
+            limit = hit_max_bbox_margin_m
+        if margin is not None and margin <= limit:
             near_hit.append(actor)
     return near_hit
 
@@ -1408,6 +1453,16 @@ def vehicle_rcs_proxy_projected_area_m2(vehicle_snapshot, sensor_location):
     return actor_rcs_proxy_projected_area_m2(vehicle_snapshot, sensor_location)
 
 
+def _match_margin(world, hit_location, actor, inflation_m, limit_m):
+    """(margin, limit) for one actor with the class-specific tolerance.
+    Pedestrians: distance to the TRUE box, limited to ped_match_max_dist_m().
+    Vehicles: distance to the box inflated by inflation_m, limited to limit_m."""
+    if _is_pedestrian(actor):
+        return (actor_bbox_margin_m(world, hit_location, actor, inflation_m=0.0),
+                min(limit_m, ped_match_max_dist_m()))
+    return actor_bbox_margin_m(world, hit_location, actor, inflation_m=inflation_m), limit_m
+
+
 def match_detection_to_actor(
     hit_location,
     candidate_actors,
@@ -1427,13 +1482,13 @@ def match_detection_to_actor(
     best_margin = None
     best_center_d = None
     for actor in candidate_actors:
-        margin = actor_bbox_margin_m(
-            world, hit_location, actor, inflation_m=extent_inflation_m
+        margin, limit = _match_margin(
+            world, hit_location, actor, extent_inflation_m, max_margin_m
         )
         if margin is None:
             continue
         center_d = hit_location.distance(actor["location"])
-        if margin > max_margin_m:
+        if margin > limit:
             continue
         if (
             best_margin is None
@@ -1517,23 +1572,23 @@ def match_radar_detection_to_actor(
 
     if len(pool) == 1:
         actor = pool[0]
-        margin = actor_bbox_margin_m(
-            world, hit_loc, actor, inflation_m=extent_inflation_m
+        margin, limit = _match_margin(
+            world, hit_loc, actor, extent_inflation_m, single_candidate_max_margin_m
         )
-        if margin is not None and margin <= single_candidate_max_margin_m:
+        if margin is not None and margin <= limit:
             return actor, margin
 
     best_actor = None
     best_margin = None
     best_center_d = None
     for actor in pool:
-        margin = actor_bbox_margin_m(
-            world, hit_loc, actor, inflation_m=extent_inflation_m
+        margin, limit = _match_margin(
+            world, hit_loc, actor, extent_inflation_m, single_candidate_max_margin_m
         )
         if margin is None:
             continue
         center_d = hit_loc.distance(actor["location"])
-        if margin > single_candidate_max_margin_m:
+        if margin > limit:
             continue
         if (
             best_margin is None
@@ -1546,10 +1601,10 @@ def match_radar_detection_to_actor(
 
     if best_actor is None and len(pool) == 1:
         actor = pool[0]
-        margin = actor_bbox_margin_m(
-            world, hit_loc, actor, inflation_m=extent_inflation_m
+        margin, limit = _match_margin(
+            world, hit_loc, actor, extent_inflation_m, single_candidate_max_margin_m
         )
-        if margin is not None and margin <= single_candidate_max_margin_m:
+        if margin is not None and margin <= limit:
             return actor, margin
 
     if best_actor is None:

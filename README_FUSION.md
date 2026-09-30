@@ -275,6 +275,8 @@ candidate bubble 2 m, candidate range gate uses CARLA's real ray reach
 (`range * sqrt(1 + tan^2(hfov/2) + tan^2(vfov/2))`, 73 m for 35/120/60, so far-lane
 hits at 35-55 m are no longer dropped).
 
+**Pedestrian tolerances (2026-09-30).** After the signal fix vehicles move and the pedestrian routes follow the boulevard sidewalks, and "match rate given candidates" fell from ~90% to 69-83%. Vehicles were unaffected (100% precision and recall against the true box). The drop was pedestrians: the vehicle tolerances (0.2 m inflation + 0.5 m margin, 2 m candidate bubble) are huge next to a 0.4 m wide walker, so facade and sidewalk returns beside walkers were counted as candidates (22% "match rate" near walkers) and some were labeled pedestrian (24% of pedestrian labels were static scene). Pedestrians now match within 0.15 m of the true walker box (`DATASET_PED_MATCH_MAX_DIST_M`) and use a 0.5 m candidate bubble (`DATASET_PED_CANDIDATE_MAX_DIST_M`). A/B on capture 20260929_012142: match rate 70.8% -> 94.2%, static-scene pedestrian labels 24% -> 6% (the floor inside the box), pedestrian and vehicle recall 100% unchanged, vehicle labels identical.
+
 Every labeled row now also carries `hit_world_{x,y,z}_m` and `return_class`
 (`vehicle | pedestrian | road | structure | unassigned`), and the labeler writes
 `radar_labeling_qa/return_class_summary.{txt,json}`. That breakdown is the
