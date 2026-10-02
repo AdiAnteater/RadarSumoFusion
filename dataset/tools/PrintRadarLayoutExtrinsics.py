@@ -40,7 +40,7 @@ from dataset_paths import config_dir
 
 
 # Heights match RadarCameraSetupN.py (8 uses DATASET_RIG_HEIGHT_M / default 3 m).
-_LAYOUT_HEIGHT_M = {4: 13.0, 8: None, 12: 13.0, 14: 11.0}
+_LAYOUT_HEIGHT_M = {4: None, 8: None, 12: None, 14: None}
 
 
 def transform_to_row(name: str, tr: carla.Transform) -> dict:

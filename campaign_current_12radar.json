@@ -1,0 +1,59 @@
+{
+  "name": "current12_s1_s2_s11",
+  "runs": [
+    {
+      "scenario": 1,
+      "density": 50,
+      "duration": 120,
+      "direction": "BOTH",
+      "ambient_vehicles": 20,
+      "pedestrians": 20,
+      "bicycles": 10,
+      "seed": 42,
+      "signals": "green",
+      "note": ""
+    },
+    {
+      "scenario": 2,
+      "density": 50,
+      "duration": 120,
+      "direction": "BOTH",
+      "ambient_vehicles": 20,
+      "pedestrians": 20,
+      "bicycles": 10,
+      "seed": 42,
+      "signals": "green",
+      "note": ""
+    },
+    {
+      "scenario": 11,
+      "density": 50,
+      "duration": 120,
+      "direction": "BOTH",
+      "ambient_vehicles": 20,
+      "pedestrians": 20,
+      "bicycles": 10,
+      "seed": 42,
+      "signals": "green",
+      "note": ""
+    }
+  ],
+  "radar_count": 12,
+  "rate_hz": 20.0,
+  "warmup_s": 20.0,
+  "label": true,
+  "postprocess": true,
+  "scene_cleanup": true,
+  "clear_trees": true,
+  "sumo_gui": false,
+  "render_radius": 150.0,
+  "no_cull": false,
+  "carla_host": "127.0.0.1",
+  "carla_port": 2000,
+  "traffic_manager_port": 8000,
+  "capture_base_dir": "",
+  "sync_timeout": 180.0,
+  "sensor_settle_s": 5.0,
+  "cleanup_verify_s": 15.0,
+  "runner_start_timeout_s": 240.0
+}

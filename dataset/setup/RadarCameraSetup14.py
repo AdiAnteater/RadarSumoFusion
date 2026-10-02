@@ -41,10 +41,8 @@ DATASET_RADAR_ROLE_PREFIX = "dataset_radar_"
 DATASET_CAMERA_ROLE_PREFIX = "dataset_camera_"
 DISABLE_CAMERA_POSTPROCESS_EFFECTS = True
 
-# Fourteen radars = seven stations per side on the monitored stretch. X/Y now
-# come from the shared stretch helper (capture/radar_layout.py); only the mount
-# height is kept here.
-_Z = 11.0
+# Fourteen radars = seven stations per side on the monitored stretch. Poses
+# come from the shared stretch helper (capture/radar_layout.py).
 
 
 def make_transform(x, y, z, pitch, yaw, roll):
@@ -192,8 +190,8 @@ def main():
 
     # Radars straddle the monitored stretch (SUMO edges 20/-20); env-tunable.
     # Coordinates from the shared helper in capture/radar_layout.py (7 stations
-    # per side -> 14 radars). Height preserved from _Z above.
-    radar_positions = stretch_radar_positions(14, height=_Z)
+    # per side -> 14 radars).
+    radar_positions = stretch_radar_positions(14)
     # Yaws are final and deterministic (capture/radar_layout.py:
     # stretch_radar_yaws). The former compute_radar_yaw_toward_road() pass
     # and the R1 := R2+90 hack are gone: the pass tie-broke +/-40 deg on

@@ -337,11 +337,14 @@ def select_one_sensor_per_label(sensors, role_prefix, allowed_labels):
 
 
 def destroy_dataset_radars(world):
-    """Remove stale dataset radars before a fresh RadarCameraSetup spawn."""
+    """Remove stale dataset radars and cameras before a fresh RadarCameraSetup spawn.
+
+    A rig stopped without its finally-block leaves its sensors in the world; a
+    leftover camera is then recorded as an extra stream by the next capture."""
     removed = 0
-    for actor in list_radar_actors(world):
+    for actor in world.get_actors().filter("sensor.*"):
         role_name = actor.attributes.get("role_name", "")
-        if not role_name.startswith(DATASET_RADAR_ROLE_PREFIX):
+        if not role_name.startswith((DATASET_RADAR_ROLE_PREFIX, DATASET_CAMERA_ROLE_PREFIX)):
             continue
         try:
             actor.destroy()

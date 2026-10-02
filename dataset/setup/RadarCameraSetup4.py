@@ -180,7 +180,7 @@ def main():
 
     # Radars straddle the monitored stretch (SUMO edges 20/-20); env-tunable.
     # Coordinates from the shared helper in capture/radar_layout.py.
-    radar_positions = stretch_radar_positions(4, height=13.0)
+    radar_positions = stretch_radar_positions(4)
     # Yaws are final and deterministic (capture/radar_layout.py:
     # stretch_radar_yaws). The former compute_radar_yaw_toward_road() pass
     # and the R1 := R2+90 hack are gone: the pass tie-broke +/-40 deg on
