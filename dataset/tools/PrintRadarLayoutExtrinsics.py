@@ -1,15 +1,16 @@
 """
-Print world-frame radar extrinsics (x,y,z m; yaw,pitch,roll deg) for each layout
-(4 / 8 / 12 / 14) using the same math as RadarCameraSetup4/8/12/14.py.
+Print world-frame radar extrinsics (x,y,z m; yaw,pitch,roll deg) for a stretch rig
+with --south / --north radars per kerb, using the same placement as
+setup/RadarCameraSetup.py.
 
 Requires CARLA running (map waypoints define the inward vector). Writes by default
 to dataset/config/:
-  - radar_layout_extrinsics_<mapname>.json
+  - radar_layout_extrinsics_<mapname>.json  (layouts keyed by total radar count)
   - radar_layout_extrinsics_<mapname>.csv
 
 Usage:
-  python PrintRadarLayoutExtrinsics.py
-  python PrintRadarLayoutExtrinsics.py --out-dir C:\\path
+  python PrintRadarLayoutExtrinsics.py --south 4 --north 4
+  python PrintRadarLayoutExtrinsics.py --south 3 --north 2 --height 3.0 --out-dir C:\\path
 """
 
 from __future__ import annotations
@@ -34,13 +35,10 @@ import carla
 from capture.radar_layout import (
     apply_radar_pitch,
     apply_stretch_radar_yaws,
+    radars_per_side_from_env,
     stretch_radar_positions,
 )
 from dataset_paths import config_dir
-
-
-# Heights match RadarCameraSetupN.py (8 uses DATASET_RIG_HEIGHT_M / default 3 m).
-_LAYOUT_HEIGHT_M = {4: 13.0, 8: None, 12: 13.0, 14: 11.0}
 
 
 def transform_to_row(name: str, tr: carla.Transform) -> dict:
@@ -56,23 +54,22 @@ def transform_to_row(name: str, tr: carla.Transform) -> dict:
     }
 
 
-def layout_for(count: int, current_map) -> dict[str, carla.Transform]:
-    radar_positions = stretch_radar_positions(count, height=_LAYOUT_HEIGHT_M[count])
+def layout_for(south: int, north: int, current_map, height=None) -> dict[str, carla.Transform]:
+    radar_positions = stretch_radar_positions(south, north, height=height)
     apply_stretch_radar_yaws(radar_positions, current_map)
     apply_radar_pitch(radar_positions)
     return radar_positions
 
 
-LAYOUTS = {
-    4: "RadarCameraSetup4 (4 radars)",
-    8: "RadarCameraSetup8 (8 radars)",
-    12: "RadarCameraSetup12 (12 radars)",
-    14: "RadarCameraSetup14 (14 radars)",
-}
-
-
 def main() -> int:
+    env_south, env_north = radars_per_side_from_env()
     p = argparse.ArgumentParser()
+    p.add_argument("--south", type=int, default=env_south,
+                   help="radars on the south kerb (default: DATASET_RADARS_SOUTH or 4)")
+    p.add_argument("--north", type=int, default=env_north,
+                   help="radars on the north kerb (default: DATASET_RADARS_NORTH or 4)")
+    p.add_argument("--height", type=float, default=None,
+                   help="mount height in m (default: DATASET_RIG_HEIGHT_M or 3.0)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=2000)
     p.add_argument("--timeout", type=float, default=10.0)
@@ -110,18 +107,23 @@ def main() -> int:
 
     all_layouts: dict = {}
 
-    for n, title in LAYOUTS.items():
-        trs: dict[str, carla.Transform] = layout_for(n, current_map)
-        rows = [transform_to_row(name, trs[name]) for name in sorted(trs.keys(), key=lambda s: int(s[1:]))]
-        all_layouts[str(n)] = rows
-        print(f"=== {title} ===", flush=True)
-        for r in rows:
-            print(
-                f"  {r['sensor_label']}:  x={r['x_m']}  y={r['y_m']}  z={r['z_m']}  |  "
-                f"yaw={r['yaw_deg']}  pitch={r['pitch_deg']}  roll={r['roll_deg']}",
-                flush=True,
-            )
-        print(flush=True)
+    try:
+        trs: dict[str, carla.Transform] = layout_for(
+            args.south, args.north, current_map, height=args.height)
+    except ValueError as e:
+        print(f"Invalid rig: {e}", file=sys.stderr)
+        return 1
+    n = len(trs)
+    rows = [transform_to_row(name, trs[name]) for name in sorted(trs.keys(), key=lambda s: int(s[1:]))]
+    all_layouts[str(n)] = rows
+    print(f"=== {args.south} south + {args.north} north ({n} radars) ===", flush=True)
+    for r in rows:
+        print(
+            f"  {r['sensor_label']}:  x={r['x_m']}  y={r['y_m']}  z={r['z_m']}  |  "
+            f"yaw={r['yaw_deg']}  pitch={r['pitch_deg']}  roll={r['roll_deg']}",
+            flush=True,
+        )
+    print(flush=True)
 
     if not args.no_write:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -132,7 +134,9 @@ def main() -> int:
                 {
                     "map": map_name,
                     "frame": world_snapshot.frame,
-                    "note": "World frame; same stretch + rig-heading slew as RadarCameraSetup4/8/12/14.",
+                    "note": "World frame; same stretch placement as setup/RadarCameraSetup.py.",
+                    "radars_south": args.south,
+                    "radars_north": args.north,
                     "layouts": all_layouts,
                 },
                 f,

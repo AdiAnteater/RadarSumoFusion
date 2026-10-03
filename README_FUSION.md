@@ -51,6 +51,8 @@ Safety nets carried over from the tick-rate work:
 python run_fusion.py --scenario 3 --density 60 --duration 300 \
     --radars 8 --rate-hz 20 --pedestrians 20 --bicycles 10
 ```
+Radar rig: `--radars N` splits N evenly between the kerbs; `--radars-south S
+--radars-north N` sets each row (0-16 each); `--radar-height M` (default 3 m).
 Useful flags: `--direction WB|EB|BOTH`, `--ambient-vehicles N`, `--sumo-gui`,
 `--no-cull`, `--no-label`, `--no-postprocess`, `--no-scene-cleanup`,
 `--capture-base-dir PATH`, `--carla-port`, `--tm-port`. See `--help`.
@@ -65,7 +67,7 @@ One panel for traffic + sensors + rate; Start; log streams in the console box.
 
 1. Preflight heal (reset leftover sync mode).
 2. Optional scene cleanup (`dataset/world/Clear*.py`).
-3. Spawn the sensor rig (`dataset/setup/RadarCameraSetupN.py`, keep-alive).
+3. Spawn the sensor rig (`dataset/setup/RadarCameraSetup.py`, keep-alive).
 4. Start capture (owns the tick; auto-stops after `--duration`; then labels +
    post-processes per DatasetCreation defaults).
 5. Start the SUMO runner (`--external-tick`, subscriber) governing traffic.
@@ -83,14 +85,23 @@ One panel for traffic + sensors + rate; Start; log streams in the console box.
 
 ## Sensor rig placement (on the monitored stretch)
 
-All four rigs (`RadarCameraSetup{4,8,12,14}.py`) now spawn on the monitored
-stretch - the east-west boulevard (SUMO edges 20 / -20) the SUMO traffic drives
-through - instead of the old native-traffic road ~77 m south. The rig straddles
-the whole boulevard: one radar row on the south kerb, one on the north kerb,
-`count/2` stations along the ~55 m length, with a single overview camera set back
-at the west end looking east down the stretch. Radar aiming still uses each
-setup's `compute_radar_yaw_toward_road()` pass, so the radars auto-orient to the
-boulevard lanes at the new location.
+One generic rig script (`dataset/setup/RadarCameraSetup.py`) spawns on the
+monitored stretch - the east-west boulevard (SUMO edges 20 / -20) the SUMO
+traffic drives through. The rig straddles the whole boulevard: one radar row on
+the south kerb, one on the north kerb, with a single overview camera set back at
+the west end looking east down the stretch.
+
+The number of radars per row is set independently (0-16 each, at least one in
+total): in the GUI ("Radars south" / "Radars north" / "Height (m)"), in the
+campaign JSON (`radars_south`, `radars_north`, `radar_height_m`), or on the
+command line. The orchestrator hands them to the rig as `DATASET_RADARS_SOUTH` /
+`DATASET_RADARS_NORTH` / `DATASET_RIG_HEIGHT_M`. Each row spreads its radars
+evenly over `DATASET_RIG_LENGTH_M` (a single radar sits at the stretch centre).
+Radars are numbered `R1..RN` west to east, south before north at the same
+offset, so equal rows give R1 south, R2 north, R3 south, ... (identical to the
+old fixed 4/8/12/14 layouts at the same height). Campaign files saved before
+this change with only `radar_count` load as an even split (south takes the odd
+one).
 
 All placement numbers live in one place (`dataset/capture/radar_layout.py`) and
 are env-tunable, so you can nudge the rig live in CARLA without editing code:
@@ -102,7 +113,8 @@ are env-tunable, so you can nudge the rig live in CARLA without editing code:
 | `DATASET_RIG_HEADING_DEG` | 0.0 | stretch direction (0 = east-west) |
 | `DATASET_RIG_LENGTH_M` | 52.0 | along-stretch coverage |
 | `DATASET_RIG_HALF_WIDTH_M` | 20.5 | centre -> each radar row (rows ~y0.2 / y41.2) |
-| `DATASET_RIG_HEIGHT_M` | per-layout | radar mount height |
+| `DATASET_RIG_HEIGHT_M` | 3.0 | radar mount height (set from the GUI / `--radar-height`) |
+| `DATASET_RADARS_SOUTH` / `DATASET_RADARS_NORTH` | 4 / 4 | radars per kerb row (set from the GUI / campaign JSON / CLI) |
 | `DATASET_CAM_HEIGHT_M` | 6.5 | camera height |
 | `DATASET_CAM_END_MARGIN_M` | 16.0 | camera set-back beyond the stretch end |
 | `DATASET_RIG_LOOK_DIR` | east | along-stretch look direction shared by ALL radars (`east` = +heading, the way the camera looks; `west`) |

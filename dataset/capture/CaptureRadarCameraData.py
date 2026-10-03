@@ -1887,6 +1887,8 @@ def write_run_meta(run_dir, world, *, radar_count, camera_count, phase="start", 
                 "anchor_x": os.environ.get("DATASET_RIG_ANCHOR_X", ""),
                 "anchor_y": os.environ.get("DATASET_RIG_ANCHOR_Y", ""),
                 "height_m": os.environ.get("DATASET_RIG_HEIGHT_M", ""),
+                "radars_south": os.environ.get("DATASET_RADARS_SOUTH", ""),
+                "radars_north": os.environ.get("DATASET_RADARS_NORTH", ""),
                 "yaw_deg": os.environ.get("DATASET_RIG_YAW_DEG", ""),
                 "pitch_deg": os.environ.get("DATASET_RADAR_PITCH_DEG", ""),
             },
@@ -1962,7 +1964,7 @@ def _run_dataset_extrinsic_exports(world, run_dir: str) -> None:
     else:
         print(
             "Extrinsic export incomplete (see messages above). "
-            "Keep CARLA and RadarCameraSetup* running when you stop recording with Enter.",
+            "Keep CARLA and RadarCameraSetup.py running when you stop recording with Enter.",
             file=sys.stderr,
             flush=True,
         )

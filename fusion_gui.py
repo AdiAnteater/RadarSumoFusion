@@ -29,7 +29,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from fusion.campaign import CampaignConfig, RunSpec, SCENARIO_NAMES, run_campaign
-from fusion.config import VALID_RADAR_COUNTS
+from fusion.config import MAX_RADARS_PER_SIDE
 
 ROOT = Path(__file__).resolve().parent
 AUTOSAVE = ROOT / ".last_campaign.json"
@@ -288,23 +288,38 @@ class CampaignGUI:
         sens = ttk.Frame(frm)
         sens.grid(row=5, column=0, sticky="ew", **pad)
         ttk.Label(sens, text="Sensors + clock (whole campaign)", font=("", 10, "bold")).grid(
-            row=0, column=0, columnspan=6, sticky="w", pady=(0, 4))
-        ttk.Label(sens, text="Radar rig").grid(row=1, column=0, sticky="w", padx=(0, 4))
-        self.radars = tk.StringVar(value="8")
-        ttk.Combobox(sens, textvariable=self.radars, width=6, state="readonly",
-                     values=[str(n) for n in VALID_RADAR_COUNTS]).grid(row=1, column=1, sticky="w")
-        ttk.Label(sens, text="Rate (Hz)").grid(row=1, column=2, sticky="w", padx=(16, 4))
+            row=0, column=0, columnspan=7, sticky="w", pady=(0, 4))
+        ttk.Label(sens, text="Radars south").grid(row=1, column=0, sticky="w", padx=(0, 4))
+        self.radars_south = tk.IntVar(value=4)
+        ttk.Spinbox(sens, from_=0, to=MAX_RADARS_PER_SIDE, textvariable=self.radars_south,
+                    width=6).grid(row=1, column=1, sticky="w")
+        ttk.Label(sens, text="Radars north").grid(row=1, column=2, sticky="w", padx=(16, 4))
+        self.radars_north = tk.IntVar(value=4)
+        ttk.Spinbox(sens, from_=0, to=MAX_RADARS_PER_SIDE, textvariable=self.radars_north,
+                    width=6).grid(row=1, column=3, sticky="w")
+        ttk.Label(sens, text="Height (m)").grid(row=1, column=4, sticky="w", padx=(16, 4))
+        self.radar_height = tk.DoubleVar(value=3.0)
+        ttk.Spinbox(sens, from_=0.5, to=12.0, increment=0.5, textvariable=self.radar_height,
+                    width=6).grid(row=1, column=5, sticky="w")
+        self.radar_total = ttk.Label(sens, text="", foreground="#444")
+        self.radar_total.grid(row=1, column=6, sticky="w", padx=(16, 0))
+        for var in (self.radars_south, self.radars_north):
+            var.trace_add("write", lambda *_: self._refresh_radar_total())
+        self._refresh_radar_total()
+
+        ttk.Label(sens, text="Rate (Hz)").grid(row=2, column=0, sticky="w", padx=(0, 4), pady=(4, 0))
         self.rate = tk.IntVar(value=20)
         ttk.Spinbox(sens, from_=1, to=100, textvariable=self.rate, width=6).grid(
-            row=1, column=3, sticky="w")
-        ttk.Label(sens, text="Warm-up per run (s)").grid(row=1, column=4, sticky="w", padx=(16, 4))
+            row=2, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(sens, text="Warm-up per run (s)").grid(row=2, column=2, sticky="w",
+                                                        padx=(16, 4), pady=(4, 0))
         self.warmup = tk.IntVar(value=20)
         ttk.Spinbox(sens, from_=0, to=300, increment=5, textvariable=self.warmup, width=6,
-                    command=self._refresh_totals).grid(row=1, column=5, sticky="w")
+                    command=self._refresh_totals).grid(row=2, column=3, sticky="w", pady=(4, 0))
         self.warmup.trace_add("write", lambda *_: self._refresh_totals())
 
         checks = ttk.Frame(sens)
-        checks.grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        checks.grid(row=3, column=0, columnspan=7, sticky="w", pady=(6, 0))
         self.label = tk.BooleanVar(value=True)
         self.post = tk.BooleanVar(value=True)
         self.cleanup = tk.BooleanVar(value=True)
@@ -382,6 +397,24 @@ class CampaignGUI:
             text=f"{len(self.runs)} run(s)   recorded {_fmt_s(rec)}   "
                  f"simulated incl. warm-up {_fmt_s(sim)}   (wall time depends on how "
                  f"fast CARLA ticks, plus labeling afterwards)")
+
+    @staticmethod
+    def _int_var(var, default: int = 0) -> int:
+        try:
+            return int(var.get())
+        except (tk.TclError, ValueError):
+            return default
+
+    @staticmethod
+    def _float_var(var, default: float = 0.0) -> float:
+        try:
+            return float(var.get())
+        except (tk.TclError, ValueError):
+            return default
+
+    def _refresh_radar_total(self):
+        s, n = self._int_var(self.radars_south), self._int_var(self.radars_north)
+        self.radar_total.configure(text=f"Total: {s + n} radars")
 
     def _selected(self) -> int | None:
         sel = self.tree.selection()
@@ -464,7 +497,9 @@ class CampaignGUI:
         return CampaignConfig(
             name=self.name.get().strip(),
             runs=[RunSpec.from_dict(vars(r)) for r in self.runs],
-            radar_count=int(self.radars.get()),
+            radars_south=self._int_var(self.radars_south),
+            radars_north=self._int_var(self.radars_north),
+            radar_height_m=self._float_var(self.radar_height, 3.0),
             rate_hz=float(self.rate.get()),
             warmup_s=float(self.warmup.get()),
             label=bool(self.label.get()),
@@ -478,7 +513,9 @@ class CampaignGUI:
         self.name.set(cfg.name)
         self.runs = list(cfg.runs)
         self.status = ["queued"] * len(self.runs)
-        self.radars.set(str(cfg.radar_count))
+        self.radars_south.set(int(cfg.radars_south))
+        self.radars_north.set(int(cfg.radars_north))
+        self.radar_height.set(float(cfg.radar_height_m))
         self.rate.set(int(cfg.rate_hz))
         self.warmup.set(int(cfg.warmup_s))
         self.label.set(cfg.label)
@@ -558,7 +595,9 @@ class CampaignGUI:
         self._stop_event = threading.Event()
         log = _QueueLog(self._q)
         self._log(f"[gui] starting campaign: {len(cfg.runs)} run(s), "
-                  f"{cfg.radar_count} radars @ {cfg.rate_hz:.0f} Hz, warm-up {cfg.warmup_s:.0f} s")
+                  f"{cfg.radar_count} radars ({cfg.radars_south}S+{cfg.radars_north}N, "
+                  f"{cfg.radar_height_m:g} m) @ {cfg.rate_hz:.0f} Hz, "
+                  f"warm-up {cfg.warmup_s:.0f} s")
 
         def _job():
             try:
