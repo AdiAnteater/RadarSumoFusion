@@ -8,7 +8,12 @@ For each (sampled) camera frame:
                  and ground-truth actor footprints (rectangles) for sanity.
 
 Run:
-  python tools/render_bev_video.py CAPTURE_DIR OUT_MP4 [N_FRAMES] [-w WINDOW] [-s {radar,camera}]
+  python tools/render_bev_video.py CAPTURE_DIR [OUT_MP4] [N_FRAMES] [-w WINDOW] [-s {radar,camera}]
+
+The video is written INTO the capture folder: CAPTURE_DIR/bev.mp4 by default, or
+CAPTURE_DIR/<name> when OUT_MP4 is a bare file name (e.g. bev_seg2.mp4). Pass a
+path with a directory part to write somewhere else. The scratch PNG folder sits
+next to the video and is removed after a successful encode.
 
 By default the cadence follows the radar (one frame per radar tick, subsampled to
 N_FRAMES) with the camera image held between its sparser updates, so radar frames
@@ -42,7 +47,10 @@ def _parse_args() -> argparse.Namespace:
         description="Render a side-by-side camera + combined-BEV radar video from a capture dir.")
     p.add_argument("capture_dir", type=Path,
                    help="Capture directory (contains camera_data.csv, radar_data_labeled.csv, ...).")
-    p.add_argument("out_mp4", type=Path, help="Output .mp4 path.")
+    p.add_argument("out_mp4", nargs="?", default=None,
+                   help="Output video. Default: CAPTURE_DIR/bev.mp4. A bare file name "
+                        "(no folder) is placed inside CAPTURE_DIR; a path with a folder is "
+                        "used as given.")
     p.add_argument("n_frames", type=int, nargs="?", default=200,
                    help="Max camera frames to render, evenly subsampled (default 200).")
     p.add_argument("-w", "--window", type=int, default=2,
@@ -86,7 +94,34 @@ def _parse_args() -> argparse.Namespace:
 
 _args = _parse_args()
 CAPTURE_DIR = _args.capture_dir
-OUT_MP4 = _args.out_mp4
+# Backward compatible with "CAPTURE_DIR N_FRAMES": a numeric second argument is
+# the frame count, not an output name.
+if _args.out_mp4 is not None and str(_args.out_mp4).isdigit():
+    _args.n_frames = int(_args.out_mp4)
+    _args.out_mp4 = None
+
+
+def _resolve_out_mp4(capture_dir: Path, out_arg) -> Path:
+    """Default and bare-name outputs go inside the capture folder."""
+    if out_arg is None:
+        return capture_dir / "bev.mp4"
+    out = Path(out_arg)
+    if out.suffix.lower() != ".mp4":
+        out = out.with_suffix(".mp4")
+    if out.parent == Path("."):
+        return capture_dir / out.name
+    return out
+
+
+if not CAPTURE_DIR.is_dir():
+    sys.exit(f"ERROR: capture folder not found: {CAPTURE_DIR}")
+OUT_MP4 = _resolve_out_mp4(CAPTURE_DIR, _args.out_mp4)
+OUT_MP4.parent.mkdir(parents=True, exist_ok=True)
+# Fail before rendering hundreds of frames, not after.
+if shutil.which("ffmpeg") is None:
+    sys.exit("ERROR: ffmpeg not found on PATH. Install it (winget install Gyan.FFmpeg), "
+             "open a new terminal, and re-run.")
+print(f"Output video: {OUT_MP4}", flush=True)
 MAX_FRAMES = _args.n_frames
 WINDOW = max(0, _args.window)
 SOURCE = _args.source
