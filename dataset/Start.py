@@ -21,15 +21,10 @@ from dataset_paths import (
     world_dir,
 )
 
-# Only one of these runs; others are excluded from the auto-launch list.
-RADAR_SETUP_SCRIPTS = frozenset(
-    {
-        "RadarCameraSetup12.py",
-        "RadarCameraSetup4.py",
-        "RadarCameraSetup8.py",
-        "RadarCameraSetup14.py",
-    }
-)
+# Generic radar/camera rig; sized by DATASET_RADARS_SOUTH / DATASET_RADARS_NORTH.
+RADAR_SETUP_SCRIPT = "RadarCameraSetup.py"
+RADAR_SETUP_SCRIPTS = frozenset({RADAR_SETUP_SCRIPT})
+MAX_RADARS_PER_SIDE = 16
 
 # Never auto-launched with the full dataset stack (run explicitly or via test mode).
 MANUAL_ONLY_SCRIPTS = frozenset(
@@ -53,14 +48,6 @@ FULL_PIPELINE_MIDDLE_SCRIPTS = (
 
 DEFAULT_PEDESTRIAN_COUNT = 30
 
-# Radar count -> setup script (each layout is mutually exclusive).
-RADAR_COUNT_TO_SETUP = {
-    4: "RadarCameraSetup4.py",
-    8: "RadarCameraSetup8.py",
-    12: "RadarCameraSetup12.py",
-    14: "RadarCameraSetup14.py",
-}
-
 # Test runs labeling after setup has had time to spawn sensors; traffic spawns in parallel.
 TEST_MODE_SCRIPTS_AFTER_SETUP = (
     "SpawnCarsAtPosition14.py",
@@ -83,26 +70,26 @@ def script_path(dc_root: Path, name: str) -> Path:
     return dc_root / "world" / name
 
 
+def split_radar_count(total: int) -> tuple[int, int]:
+    """Even split into (south, north); south takes the odd one."""
+    return (total + 1) // 2, total // 2
+
+
 def prompt_radar_count() -> int:
+    max_total = 2 * MAX_RADARS_PER_SIDE
     print("How many radars should the dataset use?")
-    print("  1) 4   -> setup/RadarCameraSetup4.py")
-    print("  2) 8   -> setup/RadarCameraSetup8.py")
-    print("  3) 12  -> setup/RadarCameraSetup12.py")
-    print("  For 14 -> setup/RadarCameraSetup14.py: type 14 at the prompt.")
-    print("Enter menu 1-3, or type the radar count: 4, 8, 12, or 14.")
-    allowed = frozenset({4, 8, 12, 14})
-    menu = {"1": 4, "2": 8, "3": 12}
+    print(f"  Any total 1-{max_total}, split evenly between the south and north kerb "
+          "(south takes the odd one).")
+    print("  For an uneven split set DATASET_RADARS_SOUTH / DATASET_RADARS_NORTH instead.")
     while True:
-        choice = input("Choice (default 2 -> 8 radars): ").strip() or "2"
+        choice = input("Radar count (default 8): ").strip() or "8"
         try:
             n = int(choice)
         except ValueError:
             n = None
-        if n is not None and n in allowed:
+        if n is not None and 1 <= n <= max_total:
             return n
-        if choice in menu:
-            return menu[choice]
-        print("Please enter 1-3, or the radar count 4, 8, 12, or 14.")
+        print(f"Please enter a whole number 1-{max_total}.")
 
 
 def prompt_run_mode() -> str:
@@ -133,9 +120,10 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--radar-count",
         type=int,
-        choices=[4, 8, 12, 14],
-        help="Radar layout (skips interactive prompt when set).",
+        help="Total radars, split evenly between the kerbs (skips interactive prompt).",
     )
+    parser.add_argument("--radars-south", type=int, help="Radars on the south kerb.")
+    parser.add_argument("--radars-north", type=int, help="Radars on the north kerb.")
     return parser.parse_args()
 
 
@@ -642,9 +630,23 @@ def main() -> None:
     prime_imports(dc_root)
     ensure_carla_importable(dc_root)
 
-    radar_count = cli.radar_count if cli.radar_count is not None else prompt_radar_count()
+    env_south = os.environ.get("DATASET_RADARS_SOUTH", "").strip()
+    env_north = os.environ.get("DATASET_RADARS_NORTH", "").strip()
+    if cli.radars_south is not None or cli.radars_north is not None:
+        radars_south, radars_north = cli.radars_south or 0, cli.radars_north or 0
+    elif cli.radar_count is not None:
+        radars_south, radars_north = split_radar_count(cli.radar_count)
+    elif env_south or env_north:
+        radars_south, radars_north = int(env_south or 0), int(env_north or 0)
+    else:
+        radars_south, radars_north = split_radar_count(prompt_radar_count())
+    if not (0 <= radars_south <= MAX_RADARS_PER_SIDE and 0 <= radars_north <= MAX_RADARS_PER_SIDE
+            and radars_south + radars_north >= 1):
+        raise SystemExit(f"Invalid radar rig: south={radars_south}, north={radars_north} "
+                         f"(each 0-{MAX_RADARS_PER_SIDE}, total >= 1).")
+    radar_count = radars_south + radars_north
     run_mode = "test" if cli.test_labeling else prompt_run_mode()
-    radar_setup_name = RADAR_COUNT_TO_SETUP[radar_count]
+    radar_setup_name = RADAR_SETUP_SCRIPT
 
     if run_mode == "test":
         scripts = get_scripts_for_test_mode(dc_root, radar_setup_name)
@@ -667,6 +669,8 @@ def main() -> None:
     child_env["DATASET_CARLA_HOST"] = os.environ.get("DATASET_CARLA_HOST", "127.0.0.1")
     child_env["DATASET_CARLA_TIMEOUT_S"] = os.environ.get("DATASET_CARLA_TIMEOUT_S", "60")
     child_env["DATASET_EXPECTED_RADAR_COUNT"] = str(radar_count)
+    child_env["DATASET_RADARS_SOUTH"] = str(radars_south)
+    child_env["DATASET_RADARS_NORTH"] = str(radars_north)
     child_env["DATASET_PEDESTRIAN_COUNT"] = str(DEFAULT_PEDESTRIAN_COUNT)
     child_env["DATASET_CAPTURE_BASE_DIR"] = str(data_dir)
     child_env["DATASET_KEEP_PEDESTRIANS_RUNNING"] = "1"
@@ -684,7 +688,8 @@ def main() -> None:
     mode_label = "TEST (radar labeling)" if test_mode else "FULL dataset"
 
     print(f"Mode: {mode_label}")
-    print(f"Radar layout: {radar_count} sensors via setup/{radar_setup_name}")
+    print(f"Radar layout: {radar_count} sensors ({radars_south} south + {radars_north} north) "
+          f"via setup/{radar_setup_name}")
     print(f"Dataset output: {data_dir}")
     print(f"Starting {len(scripts)} scripts from {dc_root}:")
     if test_mode:
@@ -810,7 +815,7 @@ def main() -> None:
             # Capture handles its own extrinsics export in its finally block while
             # sensors are still alive in the world, so we no longer call
             # export_dataset_extrinsics_in_process here — by the time we got to it,
-            # RadarCameraSetup* had already destroyed the sensors and the call failed.
+            # RadarCameraSetup.py had already destroyed the sensors and the call failed.
             stop_all(processes)
         despawn_all_cars(dc_root)
         destroy_leftover_dataset_sensors(dc_root)

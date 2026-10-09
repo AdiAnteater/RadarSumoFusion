@@ -150,18 +150,73 @@ def stretch_radar_yaws(heading_deg=None, look_dir=None, skew_deg=None):
     return _normalize_deg(south), _normalize_deg(north)
 
 
-def stretch_radar_positions(count, height=None):
+MAX_RADARS_PER_SIDE = 16
+
+
+def split_radar_count(total):
+    """Even split of a total radar count into (south, north); south takes the odd one."""
+    total = max(0, int(total))
+    return (total + 1) // 2, total // 2
+
+
+def _env_int(name):
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return None
+
+
+def radars_per_side_from_env(default_total=8):
+    """(south, north) radar counts from DATASET_RADARS_SOUTH / DATASET_RADARS_NORTH.
+
+    If neither is set, DATASET_EXPECTED_RADAR_COUNT (or ``default_total``) is
+    split evenly. Each side is clamped to 0..MAX_RADARS_PER_SIDE.
+    """
+    south, north = _env_int("DATASET_RADARS_SOUTH"), _env_int("DATASET_RADARS_NORTH")
+    if south is None and north is None:
+        total = _env_int("DATASET_EXPECTED_RADAR_COUNT")
+        south, north = split_radar_count(default_total if total is None else total)
+    south = max(0, min(south or 0, MAX_RADARS_PER_SIDE))
+    north = max(0, min(north or 0, MAX_RADARS_PER_SIDE))
+    return south, north
+
+
+def _row_offsets(n, length):
+    if n <= 0:
+        return []
+    if n == 1:
+        return [0.0]
+    step = length / (n - 1)
+    return [-length / 2.0 + i * step for i in range(n)]
+
+
+def stretch_radar_positions(south, north=None, height=None):
     """Two-row straddle rig on the monitored stretch.
 
-    Returns {"R1": carla.Transform, ...} with ``count`` radars: count//2 stations
-    spaced along the stretch, each with one radar on the south kerb (odd R#) and
-    one on the north kerb (even R#). Yaws are FINAL (see stretch_radar_yaws):
-    every radar looks across the road toward the far kerb, skewed along the
-    stretch so all radars share the same look direction. Pitch is applied
-    afterward by apply_radar_pitch(). ``count`` must be even.
+    ``south`` / ``north`` radars are spread evenly along the stretch on the
+    south and north kerb. Called with a single count (``north`` omitted), that
+    total is split evenly (south takes the odd one).
+
+    Returns {"R1": carla.Transform, ...}. Radars are numbered west to east
+    (along the rig heading), south before north at the same offset, so equal
+    counts give R1 south, R2 north, R3 south, ... Yaws are FINAL (see
+    stretch_radar_yaws): every radar looks across the road toward the far kerb,
+    skewed along the stretch so all radars share the same look direction.
+    Pitch is applied afterward by apply_radar_pitch().
     """
-    if count % 2 != 0:
-        raise ValueError(f"radar count must be even (got {count})")
+    if north is None:
+        south, north = split_radar_count(south)
+    south, north = int(south), int(north)
+    if south < 0 or north < 0:
+        raise ValueError(f"radar counts must be >= 0 (got south={south}, north={north})")
+    if south > MAX_RADARS_PER_SIDE or north > MAX_RADARS_PER_SIDE:
+        raise ValueError(f"at most {MAX_RADARS_PER_SIDE} radars per side "
+                         f"(got south={south}, north={north})")
+    if south + north < 1:
+        raise ValueError("need at least one radar")
     ax, ay = rig_anchor_from_env()
     H = math.radians(rig_heading_deg_from_env())
     length = rig_length_m_from_env()
@@ -172,26 +227,19 @@ def stretch_radar_positions(count, height=None):
     dx, dy = math.cos(H), math.sin(H)      # along the stretch
     nx, ny = -math.sin(H), math.cos(H)     # across the stretch (toward north row)
 
-    n_stations = max(1, count // 2)
-    if n_stations == 1:
-        offsets = [0.0]
-    else:
-        step = length / (n_stations - 1)
-        offsets = [-length / 2.0 + i * step for i in range(n_stations)]
+    # (offset along stretch, side 0=south/1=north)
+    slots = [(t, 0) for t in _row_offsets(south, length)]
+    slots += [(t, 1) for t in _row_offsets(north, length)]
+    slots.sort()
 
     positions = {}
-    for i, t in enumerate(offsets):
-        cx, cy = ax + t * dx, ay + t * dy
-        south = (cx - half_w * nx, cy - half_w * ny)
-        north = (cx + half_w * nx, cy + half_w * ny)
-        s_id, n_id = 2 * i + 1, 2 * i + 2
-        positions[f"R{s_id}"] = carla.Transform(
-            carla.Location(x=south[0], y=south[1], z=z),
-            carla.Rotation(0.0, south_yaw, 0.0),
-        )
-        positions[f"R{n_id}"] = carla.Transform(
-            carla.Location(x=north[0], y=north[1], z=z),
-            carla.Rotation(0.0, north_yaw, 0.0),
+    for i, (t, side) in enumerate(slots, 1):
+        sign = -1.0 if side == 0 else 1.0
+        x = ax + t * dx + sign * half_w * nx
+        y = ay + t * dy + sign * half_w * ny
+        positions[f"R{i}"] = carla.Transform(
+            carla.Location(x=x, y=y, z=z),
+            carla.Rotation(0.0, south_yaw if side == 0 else north_yaw, 0.0),
         )
     return positions
 

@@ -456,7 +456,7 @@ def run() -> int:
     if not radars:
         print(
             "[BEV] No dataset_radar_* sensors found yet. "
-            "Run RadarCameraSetup{4,8,12,14}.py first."
+            "Run setup/RadarCameraSetup.py first."
         )
     print(f"[BEV] Found {len(radars)} radars, {len(cameras)} cameras.")
 
