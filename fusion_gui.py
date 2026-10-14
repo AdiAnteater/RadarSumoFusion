@@ -23,10 +23,16 @@ The original component GUIs are unchanged:
 from __future__ import annotations
 
 import queue
+import sys
 import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:
+    sys.exit("ERROR: tkinter is not installed. On Ubuntu/Debian: sudo apt install python3-tk\n"
+             "(or run headless: python run_fusion.py --help)")
 
 from fusion.campaign import CampaignConfig, RunSpec, SCENARIO_NAMES, run_campaign
 from fusion.config import VALID_RADAR_COUNTS

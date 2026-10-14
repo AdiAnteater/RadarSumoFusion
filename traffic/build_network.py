@@ -108,13 +108,9 @@ SIDEWALK_SPEED = "2.78"
 
 
 def find_netconvert():
-    sumo_home = os.environ.get("SUMO_HOME", "")
-    if sumo_home:
-        for exe in ("netconvert.exe", "netconvert"):
-            cand = os.path.join(sumo_home, "bin", exe)
-            if os.path.isfile(cand):
-                return cand
-    return "netconvert"
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import sumo_env
+    return sumo_env.sumo_binary("netconvert")
 
 
 def patch_sidewalks(in_path, out_path):

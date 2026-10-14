@@ -3,6 +3,8 @@
 Dataset creation and traffic orchestration for autonomous-driving radar/camera
 datasets in CARLA, using SUMO as the traffic simulator.
 
+**How to run scenarios from the terminal (Windows and Linux): [README_RUNNING.md](README_RUNNING.md).**
+
 ## Project Structure
 
 ```

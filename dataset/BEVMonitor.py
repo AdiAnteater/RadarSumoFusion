@@ -408,7 +408,8 @@ def run() -> int:
     args = parse_args()
 
     # Decide output mode. Auto-pick snapshots when no display is available.
-    has_display = bool(os.environ.get("DISPLAY")) or sys.platform == "win32"
+    has_display = (bool(os.environ.get("DISPLAY")) or bool(os.environ.get("WAYLAND_DISPLAY"))
+                   or sys.platform in ("win32", "darwin"))
     if not (args.display or args.snapshots or args.video):
         if has_display:
             args.display = True

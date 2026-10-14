@@ -54,17 +54,23 @@ import re
 import argparse
 import json
 import tempfile
+import signal
 import subprocess
 import time
 
 # --- TraCI import ---
+# sumo_env finds SUMO on Windows, Linux (apt / pip) and macOS alike.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import sumo_env  # noqa: E402
+sumo_env.ensure_traci_importable()
 try:
     import traci
     import sumolib
 except ImportError:
     sys.exit(
         "ERROR: traci / sumolib not found. "
-        "Activate your venv and run: pip install traci sumolib"
+        "Activate your venv and run: pip install traci sumolib "
+        "(or set SUMO_HOME so SUMO_HOME/tools can be used)"
     )
 
 # --- CARLA sync import ---
@@ -121,9 +127,9 @@ NET_FILE      = os.path.join(NETWORK_DIR, "Town10HD_Opt_fixed.net.xml")
 RAW_NET_FILE  = os.path.join(NETWORK_DIR, "Town10HD_Opt.net.xml")
 ADD_FILE      = os.path.join(ADD_DIR,     "vehicle_types.add.xml")
 
-SUMO_HOME     = os.environ.get("SUMO_HOME", "")
-SUMO_BIN      = os.path.join(SUMO_HOME, "bin", "sumo.exe")
-SUMO_GUI_BIN  = os.path.join(SUMO_HOME, "bin", "sumo-gui.exe")
+SUMO_HOME     = sumo_env.sumo_home()
+SUMO_BIN      = sumo_env.sumo_binary("sumo")
+SUMO_GUI_BIN  = sumo_env.sumo_binary("sumo-gui")
 
 # --- Scenario metadata ---
 SCENARIOS = {
@@ -999,9 +1005,7 @@ def run(scenario_id: int, density: int, duration: int,
             sys.exit(f"ERROR: {label} file not found: {path}")
 
     # --- Pre-flight: run headless sumo to catch config errors ---
-    sumo_exe = os.path.join(SUMO_HOME, "bin", "sumo.exe")
-    if not os.path.isfile(sumo_exe):
-        sumo_exe = "sumo"
+    sumo_exe = SUMO_BIN
     preflight = subprocess.run(
         [sumo_exe, "-c", cfg_file, "--no-step-log", "--duration-log.disable",
          "true", "--end", "1"],
@@ -1019,8 +1023,6 @@ def run(scenario_id: int, density: int, duration: int,
 
     # --- Choose binary ---
     sumo_bin = SUMO_GUI_BIN if use_gui else SUMO_BIN
-    if not os.path.isfile(sumo_bin):
-        sumo_bin = "sumo-gui" if use_gui else "sumo"
 
     cmd = [sumo_bin, "-c", cfg_file, "--start"]
     if use_gui:
@@ -1081,7 +1083,7 @@ def run(scenario_id: int, density: int, duration: int,
     try:
         while traci.simulation.getMinExpectedNumber() > 0:
             if stop_file and steps_done % 5 == 0 and os.path.exists(stop_file):
-                print("[runner] stop requested by the campaign orchestrator.", flush=True)
+                print("[runner] stop requested (stop file).", flush=True)
                 exit_state = "stopped"
                 break
             if external_tick and sync is not None:
@@ -1213,6 +1215,14 @@ def main():
                              "sync mode, and per-frame tick timeout in external "
                              "mode (default %(default)s).")
     args = parser.parse_args()
+
+    # Linux/macOS: `kill`, Popen.terminate() and the GUI Stop button send
+    # SIGTERM. Turn it into KeyboardInterrupt so the finally-block still
+    # unmirrors the CARLA actors and closes TraCI.
+    if hasattr(signal, "SIGTERM") and not sumo_env.IS_WINDOWS:
+        def _on_sigterm(_signum, _frame):
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGTERM, _on_sigterm)
 
     # --external-tick can also come from the environment (how the orchestrator
     # sets it). Explicit --external-tick on the CLI wins; else fall back to env.
