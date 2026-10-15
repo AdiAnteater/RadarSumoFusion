@@ -18,17 +18,23 @@ import carla
 
 from carla_connect import get_world
 from capture.CaptureRadarCameraData import (
+    RADAR_HORIZONTAL_FOV_DEG,
+    RADAR_MAX_RANGE_M,
+    RADAR_VERTICAL_FOV_DEG,
     apply_radar_pitch,
     configure_dataset_radar_blueprint,
     destroy_dataset_radars,
+    radar_sensor_tick_s_from_env,
 )
-from dataset_paths import config_dir
 from capture.radar_layout import (
-    apply_stretch_radar_yaws,
+    radar_pitch_deg_from_env,
+    radar_height_m_from_env,
     radar_yaw_summary,
+    radars_per_side_from_env,
     stretch_radar_positions,
     stretch_camera_transform,
 )
+from dataset_paths import config_dir
 
 KEEP_SENSORS_RUNNING = os.environ.get("DATASET_KEEP_SENSORS_RUNNING", "").lower() in (
     "1",
@@ -40,11 +46,6 @@ DRAW_DEBUG_MARKERS = True
 DATASET_RADAR_ROLE_PREFIX = "dataset_radar_"
 DATASET_CAMERA_ROLE_PREFIX = "dataset_camera_"
 DISABLE_CAMERA_POSTPROCESS_EFFECTS = True
-
-# Fourteen radars = seven stations per side on the monitored stretch. X/Y now
-# come from the shared stretch helper (capture/radar_layout.py); only the mount
-# height is kept here.
-_Z = 11.0
 
 
 def make_transform(x, y, z, pitch, yaw, roll):
@@ -58,7 +59,7 @@ def normalize_angle(angle_deg):
     return (angle_deg + 180.0) % 360.0 - 180.0
 
 
-def radar_debug_color_for_name(name, num_radars=14):
+def radar_debug_color_for_name(name, num_radars=8):
     try:
         n = int(name.lstrip("R"))
         idx = (n - 1) % num_radars
@@ -70,12 +71,20 @@ def radar_debug_color_for_name(name, num_radars=14):
     return carla.Color(int(r * 255), int(g * 255), int(b * 255))
 
 
-def draw_radar_fov(world, transform, radar_range, horizontal_fov_deg, life_time, color):
+def draw_radar_fov(
+    world,
+    transform,
+    radar_range,
+    horizontal_fov_deg,
+    vertical_fov_deg,
+    life_time,
+    color,
+):
     origin = transform.location + carla.Location(z=0.2)
     center_yaw = math.radians(transform.rotation.yaw)
-    half_fov = math.radians(horizontal_fov_deg / 2.0)
+    half_hfov = math.radians(horizontal_fov_deg / 2.0)
 
-    for yaw in [center_yaw - half_fov, center_yaw, center_yaw + half_fov]:
+    for yaw in [center_yaw - half_hfov, center_yaw, center_yaw + half_hfov]:
         end = carla.Location(
             x=origin.x + radar_range * math.cos(yaw),
             y=origin.y + radar_range * math.sin(yaw),
@@ -83,10 +92,11 @@ def draw_radar_fov(world, transform, radar_range, horizontal_fov_deg, life_time,
         )
         world.debug.draw_line(origin, end, 0.06, color, life_time)
 
+    # Horizontal arc (ground plane)
     arc_points = []
     for i in range(11):
         t = i / 10
-        yaw = (center_yaw - half_fov) + t * (2 * half_fov)
+        yaw = (center_yaw - half_hfov) + t * (2 * half_hfov)
         arc_points.append(
             carla.Location(
                 x=origin.x + radar_range * math.cos(yaw),
@@ -97,6 +107,40 @@ def draw_radar_fov(world, transform, radar_range, horizontal_fov_deg, life_time,
 
     for i in range(len(arc_points) - 1):
         world.debug.draw_line(arc_points[i], arc_points[i + 1], 0.04, color, life_time)
+
+    # Vertical slice through center azimuth (sensor-local XZ plane).
+    sensor_origin = transform.location
+    half_vfov = vertical_fov_deg / 2.0
+    v_color = carla.Color(
+        min(255, color.r + 40),
+        min(255, color.g + 40),
+        min(255, color.b + 40),
+    )
+
+    for elevation_deg in [-half_vfov, 0.0, half_vfov]:
+        el_rad = math.radians(elevation_deg)
+        local = carla.Location(
+            x=radar_range * math.cos(el_rad),
+            y=0.0,
+            z=radar_range * math.sin(el_rad),
+        )
+        end = transform.transform(local)
+        world.debug.draw_line(sensor_origin, end, 0.06, v_color, life_time)
+
+    vertical_arc = []
+    for i in range(11):
+        t = i / 10
+        elevation_deg = (-half_vfov) + t * (2 * half_vfov)
+        el_rad = math.radians(elevation_deg)
+        local = carla.Location(
+            x=radar_range * math.cos(el_rad),
+            y=0.0,
+            z=radar_range * math.sin(el_rad),
+        )
+        vertical_arc.append(transform.transform(local))
+
+    for i in range(len(vertical_arc) - 1):
+        world.debug.draw_line(vertical_arc[i], vertical_arc[i + 1], 0.04, v_color, life_time)
 
 
 def format_transform(transform):
@@ -178,22 +222,23 @@ def main():
             f.write(f"{name}: {format_transform(transform)}\n")
     print(f"Saved camera transforms to {camera_output_path}")
 
-    camera_hfov = (
-        float(camera_bp.get_attribute("fov").as_float())
-        if camera_bp.has_attribute("fov")
-        else 90.0
-    )
-    camera_range = 90.0
-    camera_debug = list(camera_positions.items())
-
     radar_bp = bp_lib.find("sensor.other.radar")
     radar_pps = configure_dataset_radar_blueprint(radar_bp)
-    print(f"Radar blueprint: points_per_second={radar_pps}")
+    print(
+        f"Radar blueprint: range={int(RADAR_MAX_RANGE_M)} m, "
+        f"HFOV={int(RADAR_HORIZONTAL_FOV_DEG)}°, "
+        f"VFOV={int(RADAR_VERTICAL_FOV_DEG)}°, "
+        f"pitch={radar_pitch_deg_from_env():.1f}°, height={radar_height_m_from_env():.1f}m, "
+        f"points_per_second={radar_pps}, sensor_tick={radar_sensor_tick_s_from_env():g}",
+    )
 
-    # Radars straddle the monitored stretch (SUMO edges 20/-20); env-tunable.
-    # Coordinates from the shared helper in capture/radar_layout.py (7 stations
-    # per side -> 14 radars). Height preserved from _Z above.
-    radar_positions = stretch_radar_positions(14, height=_Z)
+    rh = radar_height_m_from_env()   # mounting height (m); DATASET_RIG_HEIGHT_M (default 3.0)
+    # Radars straddle the monitored stretch (SUMO edges 20/-20): one row per kerb,
+    # sized by DATASET_RADARS_SOUTH / DATASET_RADARS_NORTH.
+    n_south, n_north = radars_per_side_from_env()
+    radar_positions = stretch_radar_positions(n_south, n_north, height=rh)
+    num_radars = len(radar_positions)
+    print(f"Radar rig: {n_south} south + {n_north} north = {num_radars} radars")
     # Yaws are final and deterministic (capture/radar_layout.py:
     # stretch_radar_yaws). The former compute_radar_yaw_toward_road() pass
     # and the R1 := R2+90 hack are gone: the pass tie-broke +/-40 deg on
@@ -201,6 +246,29 @@ def main():
     # Override with DATASET_RIG_LOOK_DIR=east|west, DATASET_RIG_SKEW_DEG.
     apply_radar_pitch(radar_positions)
     print(f"Radar yaws: {radar_yaw_summary(radar_positions)}")
+
+    camera_hfov = (
+        float(camera_bp.get_attribute("fov").as_float())
+        if camera_bp.has_attribute("fov")
+        else 90.0
+    )
+    radar_range = (
+        float(radar_bp.get_attribute("range").as_float())
+        if radar_bp.has_attribute("range")
+        else RADAR_MAX_RANGE_M
+    )
+    radar_hfov = (
+        float(radar_bp.get_attribute("horizontal_fov").as_float())
+        if radar_bp.has_attribute("horizontal_fov")
+        else RADAR_HORIZONTAL_FOV_DEG
+    )
+    radar_vfov = (
+        float(radar_bp.get_attribute("vertical_fov").as_float())
+        if radar_bp.has_attribute("vertical_fov")
+        else RADAR_VERTICAL_FOV_DEG
+    )
+    camera_range = 90.0
+    camera_debug = list(camera_positions.items())
 
     spawned = []
 
@@ -222,8 +290,18 @@ def main():
 
             if actor:
                 spawned.append(actor)
-                role_name = actor.attributes.get("role_name", "")
-                print(f"Spawned {name} -> actor_id={actor.id} role_name={role_name!r}")
+                attrs = actor.attributes
+                role_name = attrs.get("role_name", "")
+                tr = actor.get_transform()
+                print(
+                    f"Spawned {name} -> id={actor.id} role={role_name!r} "
+                    f"pps={attrs.get('points_per_second', '?')} "
+                    f"hfov={attrs.get('horizontal_fov', '?')} "
+                    f"vfov={attrs.get('vertical_fov', '?')} "
+                    f"tick={attrs.get('sensor_tick', '?')} "
+                    f"range={attrs.get('range', '?')} "
+                    f"yaw={tr.rotation.yaw:.1f} pitch={tr.rotation.pitch:.1f}"
+                )
             else:
                 print(f"Failed to spawn radar at {name}: {transform}")
 
@@ -255,7 +333,7 @@ def main():
                         world, transform, camera_range, camera_hfov, 0.5
                     )
             for name, transform in radar_positions.items():
-                color = radar_debug_color_for_name(name)
+                color = radar_debug_color_for_name(name, num_radars)
 
                 world.debug.draw_point(
                     transform.location,
@@ -272,7 +350,15 @@ def main():
                     life_time=0.5,
                 )
 
-                draw_radar_fov(world, transform, 35, 120, 0.5, color)
+                draw_radar_fov(
+                    world,
+                    transform,
+                    radar_range,
+                    radar_hfov,
+                    radar_vfov,
+                    0.5,
+                    color,
+                )
 
             if not KEEP_SENSORS_RUNNING and enter_pressed():
                 break

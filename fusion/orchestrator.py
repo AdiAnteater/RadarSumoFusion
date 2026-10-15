@@ -4,7 +4,7 @@ Design (capture owns the tick; SUMO subscribes):
 
     preflight heal (traffic/carla_check.py --async)
         -> optional scene cleanup (dataset/world/Clear*.py)
-        -> spawn sensor rig  (dataset/setup/RadarCameraSetupN.py, keep-alive)
+        -> spawn sensor rig  (dataset/setup/RadarCameraSetup.py, keep-alive)
         -> START CAPTURE      (dataset/capture/CaptureRadarCameraData.py)
                               DATASET_SYNC_MODE=1  => it enables CARLA synchronous
                               mode and owns world.tick() at fixed_delta_s.
@@ -66,6 +66,16 @@ def _base_env(cfg: FusionConfig, extra: dict | None = None) -> dict:
     if extra:
         env.update({k: str(v) for k, v in extra.items()})
     return env
+
+
+def rig_env(cfg: FusionConfig) -> dict:
+    """Radar rig layout for the setup script and capture (extrinsics export)."""
+    return {
+        "DATASET_RADARS_SOUTH": cfg.radars_south,
+        "DATASET_RADARS_NORTH": cfg.radars_north,
+        "DATASET_RIG_HEIGHT_M": cfg.radar_height_m,
+        "DATASET_EXPECTED_RADAR_COUNT": cfg.radar_count,
+    }
 
 
 def _popen(cmd: list, cwd: Path, env: dict, *, new_group: bool) -> subprocess.Popen:
@@ -168,13 +178,14 @@ def _spawn_sensor_rig(cfg: FusionConfig, log) -> subprocess.Popen:
         raise FileNotFoundError(f"sensor setup script not found: {script}")
     delta = cfg.fixed_delta_s
     env = _base_env(cfg, {
+        **rig_env(cfg),
         "DATASET_KEEP_SENSORS_RUNNING": "1",
-        "DATASET_EXPECTED_RADAR_COUNT": cfg.radar_count,
         "DATASET_RADAR_SENSOR_TICK_S": delta,
         "DATASET_TRAFFIC_MANAGER_PORT": cfg.traffic_manager_port,
     })
     _say(log, f"[fusion] spawning {cfg.radar_count}-radar rig "
-              f"({cfg.setup_script_name()}), keep-alive ...")
+              f"({cfg.radars_south}S+{cfg.radars_north}N, {cfg.radar_height_m:g} m, "
+              f"{cfg.setup_script_name()}), keep-alive ...")
     # New group so we can CTRL_BREAK it later and let its finally destroy sensors.
     proc = _popen([str(script)], cwd=DATASET_DIR, env=env, new_group=True)
     return proc
@@ -186,12 +197,12 @@ def _start_capture(cfg: FusionConfig, log) -> subprocess.Popen:
         raise FileNotFoundError(f"capture script not found: {script}")
     delta = cfg.fixed_delta_s
     extra = {
+        **rig_env(cfg),
         # Capture OWNS the tick.
         "DATASET_SYNC_MODE": "1",
         "DATASET_SYNC_FIXED_DELTA_S": delta,
         "DATASET_RADAR_SENSOR_TICK_S": delta,
         "DATASET_CAPTURE_DURATION_S": int(cfg.duration),
-        "DATASET_EXPECTED_RADAR_COUNT": cfg.radar_count,
         "DATASET_TRAFFIC_MANAGER_PORT": cfg.traffic_manager_port,
         # Post-capture behavior: honor DatasetCreation defaults unless overridden.
         "DATASET_LABEL_RADAR_AFTER_CAPTURE": "1" if cfg.label else "0",
