@@ -17,19 +17,26 @@ from typing import Any
 
 import carla
 
-from capture.radar_layout import apply_radar_pitch, apply_stretch_radar_yaws, stretch_radar_positions
+from capture.radar_layout import (
+    apply_radar_pitch,
+    apply_stretch_radar_yaws,
+    radars_per_side_from_env,
+    stretch_radar_positions,
+)
 from dataset_paths import data_output_dir
 
 DATASET_RADAR_ROLE_PREFIX = "dataset_radar_"
 
-# Heights match RadarCameraSetupN.py (8 uses DATASET_RIG_HEIGHT_M / default 3 m).
-_LAYOUT_HEIGHT_M = {4: 13.0, 8: None, 12: 13.0, 14: 11.0}
 
+def build_manual_radar_positions(count=8):
+    """Stretch-rig poses for the legacy (non --live-actors) export path.
 
-def build_manual_radar_positions(count=12):
-    """Stretch-rig poses for the legacy (non --live-actors) export path."""
-    height = _LAYOUT_HEIGHT_M.get(count)
-    return stretch_radar_positions(count, height=height)
+    Per-side counts come from DATASET_RADARS_SOUTH / DATASET_RADARS_NORTH (as the
+    setup script uses); without them ``count`` is split evenly. Height comes from
+    DATASET_RIG_HEIGHT_M.
+    """
+    south, north = radars_per_side_from_env(default_total=count)
+    return stretch_radar_positions(south, north)
 
 
 def apply_road_alignment(radar_positions, current_map):
@@ -188,7 +195,7 @@ def write_radar_extrinsics_live_to_dataset_dir(world: carla.World, output_dir: P
     if not rows:
         print(
             "Radar extrinsics: no dataset_radar_ actors in the world. "
-            "Export runs before sensor.stop() in capture; keep RadarCameraSetup* running.",
+            "Export runs before sensor.stop() in capture; keep RadarCameraSetup.py running.",
             file=sys.stderr,
         )
         return False
@@ -258,7 +265,9 @@ def parse_args():
         help=(
             "Read extrinsics from live dataset_radar_* actors in CARLA (any radar count). "
             "Use with Start.py on shutdown while sensors are still loaded. "
-            "If omitted, uses the stretch rig for 4/8/12/14 plus rig-heading yaw slew."
+            "If omitted, rebuilds the stretch rig from DATASET_RADARS_SOUTH / "
+            "DATASET_RADARS_NORTH (else the CSV's radar count split evenly) plus "
+            "rig-heading yaw slew."
         ),
     )
     return parser.parse_args()
@@ -291,21 +300,22 @@ def main() -> int:
         return 0
 
     count = len(sensor_by_label)
-    if count not in _LAYOUT_HEIGHT_M:
+    radar_positions = build_manual_radar_positions(count)
+    if len(radar_positions) != count:
         print(
-            f"Stretch export path supports 4/8/12/14 radars (got {count}). "
-            "Use --live-actors with CARLA running.",
+            f"Rig layout has {len(radar_positions)} radars but {radar_csv_path.name} has "
+            f"{count}. Set DATASET_RADARS_SOUTH / DATASET_RADARS_NORTH to the capture's "
+            "rig, or use --live-actors with CARLA running.",
             file=sys.stderr,
         )
         return 1
-    radar_positions = build_manual_radar_positions(count)
     current_map = world.get_map()
     radar_positions = apply_road_alignment(radar_positions, current_map)
     try:
         rows = build_extrinsic_rows(sensor_by_label, radar_positions)
     except KeyError as e:
         print(
-            f"{e}. For layouts outside fixed R1..R12, use --live-actors with CARLA running.",
+            f"{e}. Use --live-actors with CARLA running.",
             file=sys.stderr,
         )
         return 1
