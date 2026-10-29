@@ -121,8 +121,58 @@ class SidewalkLockTests(unittest.TestCase):
         self.assertFalse(ped.is_crossing_lane("20_0"))
 
 
+class _CrossingShare:
+    """Temporarily set SUMO_PED_CROSSING_SHARE for one test."""
+
+    def __init__(self, value):
+        self.value = value
+        self.old = None
+
+    def __enter__(self):
+        self.old = os.environ.get("SUMO_PED_CROSSING_SHARE")
+        os.environ["SUMO_PED_CROSSING_SHARE"] = str(self.value)
+
+    def __exit__(self, *exc):
+        if self.old is None:
+            os.environ.pop("SUMO_PED_CROSSING_SHARE", None)
+        else:
+            os.environ["SUMO_PED_CROSSING_SHARE"] = self.old
+
+
 class PedestrianRouteTests(unittest.TestCase):
     def test_most_walking_time_is_not_inside_junctions(self):
+        # Guards the sidewalk corridors against parking people in junctions.
+        # The crossing walks wait at the boulevard crosswalks on purpose, so
+        # they are switched off here and checked in the test below.
+        with _CrossingShare(0):
+            self._check_sidewalk_corridors()
+
+    def test_crossing_walks_use_boulevard_crosswalks(self):
+        import traci
+        with _CrossingShare(1.0):
+            cfg, tmp = val.build_files(1, 40, 240, "BOTH", 0, 60, 0, 42, 0.1)
+        log_path = tempfile.mktemp(suffix="_pedx.log")
+        traci.start([val.sumo_binary(), "-c", cfg, "--start", "--log", log_path,
+                     "--no-step-log"], label="pedx")
+        used = set()
+        try:
+            import stretch_signals
+            stretch_signals.apply_corridor_priority(val.runner.NET_FILE, verbose=False)
+            for _ in range(2400):
+                traci.simulationStep()
+                for pid in traci.person.getIDList():
+                    lane = traci.person.getLaneID(pid)
+                    if lane.startswith(":189_c0") or lane.startswith(":841_c2"):
+                        used.add(lane.split("_c")[0])
+                if len(used) == 2:
+                    break
+        finally:
+            traci.close()
+            val._cleanup(tmp)
+        self.assertEqual(used, {":189", ":841"},
+                         msg=f"boulevard crosswalks used: {sorted(used)}")
+
+    def _check_sidewalk_corridors(self):
         args = val.argparse.Namespace(
             density=40,
             duration=120,
