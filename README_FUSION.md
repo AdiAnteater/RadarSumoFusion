@@ -87,8 +87,10 @@ All four rigs (`RadarCameraSetup{4,8,12,14}.py`) now spawn on the monitored
 stretch - the east-west boulevard (SUMO edges 20 / -20) the SUMO traffic drives
 through - instead of the old native-traffic road ~77 m south. The rig straddles
 the whole boulevard: one radar row on the south kerb, one on the north kerb,
-`count/2` stations along the ~55 m length, with a single overview camera set back
-at the west end looking east down the stretch. Radar aiming still uses each
+`count/2` stations along the length, with a single overview camera set back
+at the west end of the original 55 m stretch looking east. 8, 12 and 14 radars
+span the whole boulevard (junction 719 stop line x -88.6 to junction 532 stop
+line x 83.1, ~172 m); 4 radars stay on the original 55 m stretch. Radar aiming still uses each
 setup's `compute_radar_yaw_toward_road()` pass, so the radars auto-orient to the
 boulevard lanes at the new location.
 
@@ -97,10 +99,10 @@ are env-tunable, so you can nudge the rig live in CARLA without editing code:
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `DATASET_RIG_ANCHOR_X` | -1.0 | stretch mid X (CARLA world) |
+| `DATASET_RIG_ANCHOR_X` | -2.75 (4 radars: -1.0) | rig mid X (CARLA world) |
 | `DATASET_RIG_ANCHOR_Y` | 20.7 | boulevard cross-section mid Y |
 | `DATASET_RIG_HEADING_DEG` | 0.0 | stretch direction (0 = east-west) |
-| `DATASET_RIG_LENGTH_M` | 52.0 | along-stretch coverage |
+| `DATASET_RIG_LENGTH_M` | 171.7 (4 radars: 52.0) | along-stretch coverage |
 | `DATASET_RIG_HALF_WIDTH_M` | 20.5 | centre -> each radar row (rows ~y0.2 / y41.2) |
 | `DATASET_RIG_HEIGHT_M` | per-layout | radar mount height |
 | `DATASET_CAM_HEIGHT_M` | 6.5 | camera height |
@@ -294,8 +296,9 @@ a thread pool). The old single thread fell behind on slower machines, outran the
 600-frame snapshot cache and then silently skipped every frame ("41 frames then
 nothing"). Every frame is saved now, with or without actors nearby.
 
-Derived from the net: boulevard runs along +X, x in [-28.7, 26.4] (~55 m),
-carriageways span y in [5.4 .. 36.0], mid ~(-1.0, 20.7). Lower
+Derived from the net: the boulevard runs along +X from x -88.6 to 83.1 (edges
+18-21, ~172 m); the original stretch (edges 20 / -20) is x in [-28.7, 26.4].
+Carriageways span y in [5.4 .. 36.0], mid y ~20.7. Lower
 `DATASET_RIG_HALF_WIDTH_M` (e.g. 12) to pull the rows closer to the lanes.
 
 ## Post-run freeze fix

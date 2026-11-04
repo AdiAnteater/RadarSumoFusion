@@ -220,8 +220,25 @@ def _ped_snap_max_m():
 
 PED_SNAP_MAX_M = _ped_snap_max_m()
 
+# On a SUMO walking area the walker is put on the nearest CARLA pavement within
+# this distance instead of SUMO's raw position. Walking areas on this net span
+# the whole road cross-section (the corner ones are hundreds of m2), so the raw
+# position cuts across the road, through stopped cars and into kerbside poles.
+PED_WALKINGAREA_SNAP_MAX_M = 12.0
+
+# Street furniture walkers are steered around: poles, traffic lights and signs
+# from world.get_environment_objects(). Only objects with a small footprint
+# (bounding box half-size up to PED_OBSTACLE_MAX_HALF_M) are used, so a lamp
+# whose box includes its arm over the road does not push walkers off the
+# pavement. A walker closer than half-size + PED_OBSTACLE_CLEARANCE_M to one is
+# pushed straight out to that distance.
+PED_OBSTACLE_LABELS = ("Poles", "TrafficLight", "TrafficSigns")
+PED_OBSTACLE_MAX_HALF_M = 0.6
+PED_OBSTACLE_CLEARANCE_M = 0.4
+
 from pedestrian_path import (  # noqa: E402
     crossing_will_be_real,
+    is_walking_area,
     next_pose,
     sidewalk_query_point,
 )
@@ -291,7 +308,9 @@ class CarlaSyncManager:
         self._ped_half_height  = {}   # pid -> bounding_box.extent.z of its walker
         self._ped_state        = {}   # pid -> locked sidewalk, rendered pose, crossing ticks
         self._veh_ground_cache = {}   # grid cell -> ground z (vehicle Z cache)
-        self._ped_snap_cache   = {}   # grid cell -> (x, y, z) snapped ped pose
+        self._ped_snap_cache   = {}   # grid cell -> nearest sidewalk (x, y, road, lane)
+        self._zebras           = []   # CARLA crosswalk polygons [(x, y), ...]
+        self._obstacles        = {}   # 1 m grid cell -> [(x, y, radius)]
         self._spawn_count   = 0
         self._destroy_count = 0
         # Tracks how many consecutive spawn attempts have failed for a
@@ -311,6 +330,8 @@ class CarlaSyncManager:
             self._blueprints = self._world.get_blueprint_library()
             self._connected  = True
             print(f"[CarlaSyncManager] Connected. Map: {self._map.name}")
+            if self._mirror_peds:
+                self._load_walkable_geometry()
 
             # Wipe any leftover/parked vehicles BEFORE we mirror anything.
             # Leaked actors from a prior crashed run, or Town10HD_Opt's own
@@ -770,6 +791,80 @@ class CarlaSyncManager:
 
     # --- Pedestrian mirroring ---
 
+    def _load_walkable_geometry(self):
+        """Cache the CARLA zebra polygons and small street furniture once.
+
+        map.get_crosswalks() returns every crosswalk outline as consecutive
+        points, each polygon closed by repeating its first point.
+        """
+        self._zebras = []
+        try:
+            poly = []
+            for loc in self._map.get_crosswalks():
+                pt = (loc.x, loc.y)
+                if poly and math.hypot(pt[0] - poly[0][0], pt[1] - poly[0][1]) < 1e-3:
+                    if len(poly) >= 3:
+                        self._zebras.append(poly)
+                    poly = []
+                else:
+                    poly.append(pt)
+            if len(poly) >= 3:
+                self._zebras.append(poly)
+        except Exception as e:  # noqa: BLE001
+            print(f"[CarlaSyncManager] NOTE: no crosswalk data ({e}).")
+        self._obstacles = {}
+        n_obs = 0
+        for label in PED_OBSTACLE_LABELS:
+            try:
+                objs = self._world.get_environment_objects(
+                    getattr(carla.CityObjectLabel, label))
+            except Exception:  # noqa: BLE001
+                continue
+            for obj in objs:
+                bb = obj.bounding_box
+                half = max(bb.extent.x, bb.extent.y)
+                if half > PED_OBSTACLE_MAX_HALF_M:
+                    continue
+                r = half + PED_OBSTACLE_CLEARANCE_M
+                key = (int(math.floor(bb.location.x)), int(math.floor(bb.location.y)))
+                self._obstacles.setdefault(key, []).append(
+                    (bb.location.x, bb.location.y, r))
+                n_obs += 1
+        print(f"[CarlaSyncManager] Walkers: {len(self._zebras)} zebra crossings, "
+              f"{n_obs} poles/signs to steer around.")
+
+    def _on_zebra(self, cx: float, cy: float) -> bool:
+        """True if (cx, cy) is inside a CARLA zebra crossing outline."""
+        for poly in self._zebras:
+            inside = False
+            j = len(poly) - 1
+            for i in range(len(poly)):
+                xi, yi = poly[i]
+                xj, yj = poly[j]
+                if ((yi > cy) != (yj > cy)) and \
+                        cx < (xj - xi) * (cy - yi) / (yj - yi + 1e-12) + xi:
+                    inside = not inside
+                j = i
+            if inside:
+                return True
+        return False
+
+    def _avoid_obstacles(self, x: float, y: float):
+        """Push (x, y) out of any nearby pole / sign footprint."""
+        if not self._obstacles:
+            return x, y
+        kx, ky = int(math.floor(x)), int(math.floor(y))
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for ox, oy, r in self._obstacles.get((kx + dx, ky + dy), ()):
+                    d = math.hypot(x - ox, y - oy)
+                    if d < r:
+                        if d < 1e-6:
+                            x, y = ox + r, oy
+                        else:
+                            x, y = ox + (x - ox) * r / d, oy + (y - oy) * r / d
+        return x, y
+
     def _pedestrian_ground_z(self, cx: float, cy: float) -> float:
         """Height of the walkable surface under (cx, cy), in CARLA world coords.
 
@@ -880,7 +975,18 @@ class CarlaSyncManager:
         raw = (cx, cy)
         nearest = None
         nearest_lane = None
-        if not crossing_will_be_real(state, lane):
+        if is_walking_area(lane):
+            # Never the raw position: the zebra if SUMO is already on it,
+            # otherwise the nearest CARLA pavement, lane lock ignored so the
+            # walker can follow the kerb onto the next sidewalk round a corner.
+            if self._on_zebra(cx, cy):
+                nearest = raw
+            else:
+                found = self._nearest_sidewalk(cx, cy, PED_WALKINGAREA_SNAP_MAX_M)
+                if found is not None:
+                    nearest = (found[0], found[1])
+                    nearest_lane = (found[2], found[3])
+        elif not crossing_will_be_real(state, lane):
             qx, qy = sidewalk_query_point(
                 raw,
                 None if state is None else state.get("locked"),
@@ -892,6 +998,10 @@ class CarlaSyncManager:
                 nearest_lane = (found[2], found[3])
         sx, sy, yaw, state = next_pose(
             raw, sumo_yaw, lane, nearest, nearest_lane, state, PED_SNAP_MAX_M)
+        # Off zebras, steer round poles; the pushed point is where the body is.
+        if not self._on_zebra(sx, sy):
+            sx, sy = self._avoid_obstacles(sx, sy)
+            state["rendered"] = (sx, sy)
         self._ped_state[pid] = state
         half = self._ped_half_height.get(pid, PED_DEFAULT_HALF_HEIGHT)
         return carla.Transform(
@@ -899,32 +1009,39 @@ class CarlaSyncManager:
             carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0),
         )
 
-    def _nearest_sidewalk(self, cx: float, cy: float):
-        """Sidewalk point at the lookup, as (x, y, road_id, lane_id), or None.
+    def _nearest_sidewalk(self, cx: float, cy: float, max_m: float = None):
+        """Sidewalk point at the lookup, as (x, y, road_id, lane_id), or None
+        when the nearest sidewalk is farther than ``max_m`` (default
+        PED_SNAP_MAX_M).
 
-        ``(cx, cy)`` is the locked pavement plus this tick's step, not SUMO's
-        raw position. The lane id is what lets the walker refuse the pavement
-        across the street. Cached per grid cell of that lookup point.
+        On a sidewalk ``(cx, cy)`` is the locked pavement plus this tick's
+        step, not SUMO's raw position; on a walking area it is the raw
+        position. The lane id is what lets the walker refuse the pavement
+        across the street. The lookup is cached per grid cell.
         """
         if PED_SNAP_MAX_M <= 0:
             return None
+        if max_m is None:
+            max_m = PED_SNAP_MAX_M
         key = (round(cx / GROUND_PROBE_GRID_M), round(cy / GROUND_PROBE_GRID_M))
         if key in self._ped_snap_cache:
-            return self._ped_snap_cache[key]
-        found = None
-        try:
-            wp = self._map.get_waypoint(
-                carla.Location(x=cx, y=cy, z=WAYPOINT_SEARCH_Z),
-                project_to_road=True,
-                lane_type=carla.LaneType.Sidewalk,
-            )
-            if wp is not None:
-                loc = wp.transform.location
-                if math.hypot(loc.x - cx, loc.y - cy) <= PED_SNAP_MAX_M:
+            found = self._ped_snap_cache[key]
+        else:
+            found = None
+            try:
+                wp = self._map.get_waypoint(
+                    carla.Location(x=cx, y=cy, z=WAYPOINT_SEARCH_Z),
+                    project_to_road=True,
+                    lane_type=carla.LaneType.Sidewalk,
+                )
+                if wp is not None:
+                    loc = wp.transform.location
                     found = (loc.x, loc.y, wp.road_id, wp.lane_id)
-        except Exception:
-            pass
-        self._ped_snap_cache[key] = found
+            except Exception:
+                pass
+            self._ped_snap_cache[key] = found
+        if found is None or math.hypot(found[0] - cx, found[1] - cy) > max_m:
+            return None
         return found
 
     def _walker_blueprint(self, pid: str) -> carla.ActorBlueprint:
