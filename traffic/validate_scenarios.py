@@ -32,6 +32,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import sumo_env  # noqa: E402
+sumo_env.ensure_traci_importable()
 import traci  # noqa: E402
 
 import runner  # noqa: E402
@@ -50,11 +52,7 @@ EXPECT = {
 
 
 def sumo_binary() -> str:
-    home = os.environ.get("SUMO_HOME", "")
-    for cand in (os.path.join(home, "bin", "sumo.exe"), os.path.join(home, "bin", "sumo")):
-        if home and os.path.isfile(cand):
-            return cand
-    return "sumo"
+    return sumo_env.sumo_binary("sumo")
 
 
 def build_files(scenario_id, density, duration, direction, ambient_vehicles,

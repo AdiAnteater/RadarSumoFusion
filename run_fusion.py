@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from fusion.config import FusionConfig, VALID_RADAR_COUNTS
+from fusion.config import FusionConfig, MAX_RADARS_PER_SIDE, split_radar_count
 from fusion.orchestrator import run
 from fusion.campaign import CampaignConfig, run_campaign
 
@@ -55,8 +55,16 @@ def main() -> int:
     p.add_argument("--no-cull", action="store_true", help="mirror the whole city")
     p.add_argument("--sumo-gui", action="store_true", help="show sumo-gui")
     # sensors / capture
-    p.add_argument("--radars", type=int, default=8, choices=list(VALID_RADAR_COUNTS),
-                   help="radar rig size -> setup/RadarCameraSetupN.py")
+    p.add_argument("--radars", type=int, default=None,
+                   help="total radars, split evenly between the kerbs (south takes "
+                        "the odd one); default 8. Overridden per side by "
+                        "--radars-south / --radars-north")
+    p.add_argument("--radars-south", type=int, default=None,
+                   help=f"radars on the south kerb row (0-{MAX_RADARS_PER_SIDE})")
+    p.add_argument("--radars-north", type=int, default=None,
+                   help=f"radars on the north kerb row (0-{MAX_RADARS_PER_SIDE})")
+    p.add_argument("--radar-height", type=float, default=3.0,
+                   help="radar mount height above the road (m)")
     _bool_flag(p, "label", True,
                "run radar labeling after capture", "skip radar labeling")
     _bool_flag(p, "postprocess", True,
@@ -84,13 +92,20 @@ def main() -> int:
         ccfg.carla_host, ccfg.carla_port = args.carla_host, args.carla_port
         return 0 if run_campaign(ccfg).ok else 1
 
+    south, north = split_radar_count(8 if args.radars is None else args.radars)
+    if args.radars_south is not None:
+        south = args.radars_south
+    if args.radars_north is not None:
+        north = args.radars_north
+
     cfg = FusionConfig(
         scenario=args.scenario, density=args.density, duration=args.duration,
         direction=args.direction, ambient_vehicles=args.ambient_vehicles,
         pedestrians=args.pedestrians, bicycles=args.bicycles,
         ambient_seed=args.ambient_seed, render_radius=args.render_radius,
         no_cull=args.no_cull, sumo_gui=args.sumo_gui,
-        radar_count=args.radars, label=args.label, postprocess=args.postprocess,
+        radars_south=south, radars_north=north, radar_height_m=args.radar_height,
+        label=args.label, postprocess=args.postprocess,
         capture_base_dir=args.capture_base_dir,
         rate_hz=args.rate_hz, carla_host=args.carla_host, carla_port=args.carla_port,
         traffic_manager_port=args.tm_port,

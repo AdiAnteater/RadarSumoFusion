@@ -57,6 +57,13 @@ to junction 532 stop line (x 83.1), between the radar rows (y 0.2 .. 41.2).
 No vehicle or pedestrian may spawn or despawn inside that box grown by
 SPAWN_EXCLUSION_MARGIN_M. check_spawn_exclusion() verifies a finished route
 file against it. Mirrors dataset/capture/radar_layout.py -- keep in sync.
+
+Two more walks (STRETCH_PED_CROSSING_CORRIDORS) cross the boulevard on the
+zebras at its two ends (junction 719 west, 532 east), so some pedestrians are
+on the carriageway. Each walks one sidewalk the full length, crosses, and
+walks back on the other; spawn and despawn stay outside the radar zone.
+They take PED_CROSSING_SHARE (default 0.3) of the stretch pedestrian budget;
+set SUMO_PED_CROSSING_SHARE=0 to go back to sidewalk-only walks.
 """
 
 import random
@@ -162,6 +169,15 @@ def in_radar_zone_carla(x, y, margin=SPAWN_EXCLUSION_MARGIN_M):
     return (RADAR_ZONE_X_WEST - margin <= x <= RADAR_ZONE_X_EAST + margin
             and RADAR_ZONE_Y_SOUTH - margin <= y <= RADAR_ZONE_Y_NORTH + margin)
 
+# Walks that CROSS the boulevard, on the CARLA zebras at its two ends (the old
+# crossings at 189 / 841 had no zebra and are gone from the rebuilt net).
+#   x_east: north sidewalk east, zebra at 532 (:532_c2), south sidewalk west.
+#   x_west: south sidewalk west, zebra at 719 (:719_c1), north sidewalk east.
+# (id_suffix, walk edges, departPos, arrivalPos); spawn/despawn outside the zone.
+STRETCH_PED_CROSSING_CORRIDORS = [
+    ("x_east", "-6 18 19 20 21 -21 -20 -19 -18 -5", 35.0, 45.0),
+    ("x_west", "1 2 -21 -20 -19 -18 18 19 20 21 3 0 10", 35.0, 75.0),
+]
 
 # Monitored-stretch midpoint in CARLA world coordinates -- centre of the CARLA
 # render radius (SUMO 108.5,121.5 -> CARLA via x-off 109.34 and the y flip).
@@ -178,6 +194,22 @@ AMBIENT_PED_MAX_PERHOUR = 400.0 # total pedestrians/h
 # is what pushed the crossing fraction to ~0.57. Stretch walks are the paths
 # the sensors can see.
 PED_STRETCH_SHARE = 1.0
+
+# Share of the stretch pedestrian budget given to the crossing walks above.
+# 0 restores the old sidewalk-only behaviour. Override with
+# SUMO_PED_CROSSING_SHARE (0-1) without editing code.
+PED_CROSSING_SHARE = 0.3
+
+
+def ped_crossing_share() -> float:
+    import os
+    raw = os.environ.get("SUMO_PED_CROSSING_SHARE", "").strip()
+    if raw:
+        try:
+            return max(0.0, min(float(raw), 1.0))
+        except ValueError:
+            pass
+    return PED_CROSSING_SHARE
 
 
 def apply_map_edge_routes(content: str) -> str:
@@ -347,14 +379,22 @@ def generate_ambient(net_file: str, seed: int, veh_level: int,
         # Pedestrians ON the monitored stretch: fixed sidewalk corridors, so
         # they are guaranteed to walk past the sensors rather than left to the
         # router's discretion.
-        stretch_ph = total_ph * PED_STRETCH_SHARE / len(STRETCH_PED_CORRIDORS)
-        for suffix, edges, dpos, apos in STRETCH_PED_CORRIDORS:
-            lines.append(
-                f'    <personFlow id="ped_stretch_{suffix}" begin="0" '
-                f'end="{duration}" perHour="{stretch_ph:.1f}" departPos="{dpos:.1f}">\n'
-                f'        <walk edges="{edges}" arrivalPos="{apos:.1f}"/>\n'
-                f'    </personFlow>'
-            )
+        stretch_total = total_ph * PED_STRETCH_SHARE
+        cross_share = ped_crossing_share()
+        groups = [(STRETCH_PED_CORRIDORS, stretch_total * (1.0 - cross_share))]
+        if cross_share > 0.0:
+            groups.append((STRETCH_PED_CROSSING_CORRIDORS, stretch_total * cross_share))
+        for corridors, group_ph in groups:
+            per_ph = group_ph / len(corridors)
+            if per_ph <= 0.0:
+                continue
+            for suffix, edges, dpos, apos in corridors:
+                lines.append(
+                    f'    <personFlow id="ped_stretch_{suffix}" begin="0" '
+                    f'end="{duration}" perHour="{per_ph:.1f}" departPos="{dpos:.1f}">\n'
+                    f'        <walk edges="{edges}" arrivalPos="{apos:.1f}"/>\n'
+                    f'    </personFlow>'
+                )
 
         # Pedestrians elsewhere in the city: random sidewalk-to-sidewalk trips.
         city_ph = total_ph * (1.0 - PED_STRETCH_SHARE)

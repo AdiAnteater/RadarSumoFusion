@@ -18,15 +18,33 @@ Run with:
 import os
 import sys
 import subprocess
+import tempfile
 import threading
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
 import queue
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox, scrolledtext
+except ImportError:
+    sys.exit("ERROR: tkinter is not installed. On Ubuntu/Debian: sudo apt install python3-tk\n"
+             "(or run scenarios without the GUI: python traffic/runner.py --scenario 1)")
 
 #  Paths 
 HERE       = os.path.dirname(os.path.abspath(__file__))
 RUNNER_PY  = os.path.join(HERE, "runner.py")
 NET_FILE   = os.path.join(HERE, "network", "Town10HD_Opt.net.xml")
+
+# Fonts: Segoe UI / Consolas only exist on Windows. Tk silently falls back
+# to a default otherwise, which changes the layout, so pick per platform.
+if sys.platform == "win32":
+    UI_FONT, MONO_FONT = "Segoe UI", "Consolas"
+elif sys.platform == "darwin":
+    UI_FONT, MONO_FONT = "Helvetica", "Menlo"
+else:
+    UI_FONT, MONO_FONT = "DejaVu Sans", "DejaVu Sans Mono"
+
+# Seconds to wait for the runner to stop cleanly (unmirror CARLA actors)
+# after the Stop button before it is force-terminated.
+STOP_GRACE_S = 10.0
 
 #  Scenario definitions for display 
 SCENARIOS = [
@@ -113,7 +131,7 @@ class TrafficGUI(tk.Tk):
         left.columnconfigure(0, weight=1)
 
         tk.Label(left, text="Traffic Scenarios",
-                 font=("Segoe UI", 14, "bold"), bg=BG, fg=ACCENT
+                 font=(UI_FONT, 14, "bold"), bg=BG, fg=ACCENT
                  ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         scroll_frame = tk.Frame(left, bg=BG)
@@ -146,7 +164,7 @@ class TrafficGUI(tk.Tk):
         right.rowconfigure(7, weight=1)
 
         tk.Label(right, text="Configuration",
-                 font=("Segoe UI", 13, "bold"), bg=PANEL, fg=ACCENT
+                 font=(UI_FONT, 13, "bold"), bg=PANEL, fg=ACCENT
                  ).grid(row=0, column=0, sticky="w", pady=(0, 12))
 
         self._build_controls(right)
@@ -160,7 +178,7 @@ class TrafficGUI(tk.Tk):
 
         self._run_btn = tk.Button(
             btn_frame, text="▶  Launch Simulation",
-            font=("Segoe UI", 11, "bold"),
+            font=(UI_FONT, 11, "bold"),
             bg=GREEN, fg="white", activebackground="#3a9060",
             relief="flat", cursor="hand2", padx=10, pady=8,
             command=self._launch
@@ -169,7 +187,7 @@ class TrafficGUI(tk.Tk):
 
         self._stop_btn = tk.Button(
             btn_frame, text="■  Stop",
-            font=("Segoe UI", 11, "bold"),
+            font=(UI_FONT, 11, "bold"),
             bg=RED, fg="white", activebackground="#b03030",
             relief="flat", cursor="hand2", padx=10, pady=8,
             state="disabled",
@@ -179,12 +197,12 @@ class TrafficGUI(tk.Tk):
 
         # Log output
         tk.Label(right, text="Output Log",
-                 font=("Segoe UI", 10, "bold"), bg=PANEL, fg=TEXT_DIM
+                 font=(UI_FONT, 10, "bold"), bg=PANEL, fg=TEXT_DIM
                  ).grid(row=6, column=0, sticky="w", pady=(4, 2))
 
         self._log = scrolledtext.ScrolledText(
             right, height=10, bg="#111620", fg="#aaccee",
-            font=("Consolas", 9), relief="flat",
+            font=(MONO_FONT, 9), relief="flat",
             insertbackground=ACCENT, state="disabled"
         )
         self._log.grid(row=7, column=0, sticky="nsew")
@@ -199,17 +217,17 @@ class TrafficGUI(tk.Tk):
         # Number badge
         badge = tk.Label(frame,
                          text=f"{sid:02d}",
-                         font=("Segoe UI", 11, "bold"),
+                         font=(UI_FONT, 11, "bold"),
                          bg=ACCENT_DARK, fg="white",
                          width=3, padx=4, pady=2)
         badge.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 10))
 
         tk.Label(frame, text=name,
-                 font=("Segoe UI", 10, "bold"), bg=PANEL, fg=TEXT,
+                 font=(UI_FONT, 10, "bold"), bg=PANEL, fg=TEXT,
                  anchor="w").grid(row=0, column=1, sticky="ew")
 
         tk.Label(frame, text=desc,
-                 font=("Segoe UI", 8), bg=PANEL, fg=TEXT_DIM,
+                 font=(UI_FONT, 8), bg=PANEL, fg=TEXT_DIM,
                  anchor="w", justify="left", wraplength=340
                  ).grid(row=1, column=1, sticky="ew")
 
@@ -223,7 +241,7 @@ class TrafficGUI(tk.Tk):
     def _build_controls(self, parent):
         # Density slider
         tk.Label(parent, text="Traffic Density",
-                 font=("Segoe UI", 10, "bold"), bg=PANEL, fg=TEXT
+                 font=(UI_FONT, 10, "bold"), bg=PANEL, fg=TEXT
                  ).grid(row=1, column=0, sticky="w")
 
         density_row = tk.Frame(parent, bg=PANEL)
@@ -239,7 +257,7 @@ class TrafficGUI(tk.Tk):
 
         self._density_label = tk.Label(
             density_row, text="50  (~477 veh/h/dir)",
-            font=("Consolas", 9), bg=PANEL, fg=ACCENT, width=24
+            font=(MONO_FONT, 9), bg=PANEL, fg=ACCENT, width=24
         )
         self._density_label.grid(row=0, column=1, padx=(8, 0))
 
@@ -248,13 +266,13 @@ class TrafficGUI(tk.Tk):
         dur_frame.grid(row=3, column=0, sticky="ew", pady=(0, 8))
 
         tk.Label(dur_frame, text="Duration (seconds):",
-                 font=("Segoe UI", 10, "bold"), bg=PANEL, fg=TEXT
+                 font=(UI_FONT, 10, "bold"), bg=PANEL, fg=TEXT
                  ).pack(side="left")
 
         vcmd = (self.register(lambda s: s.isdigit() or s == ""), "%P")
         dur_entry = tk.Entry(dur_frame, textvariable=self._duration,
                              width=7, bg="#111620", fg=TEXT,
-                             insertbackground=ACCENT, font=("Consolas", 10),
+                             insertbackground=ACCENT, font=(MONO_FONT, 10),
                              relief="flat", validate="key",
                              validatecommand=vcmd)
         dur_entry.pack(side="left", padx=(8, 0))
@@ -263,7 +281,7 @@ class TrafficGUI(tk.Tk):
         for label, val in [("10m", 600), ("20m", 1200), ("30m", 1800)]:
             tk.Button(dur_frame, text=label,
                       bg=ACCENT_DARK, fg="white",
-                      font=("Segoe UI", 8), relief="flat",
+                      font=(UI_FONT, 8), relief="flat",
                       cursor="hand2", padx=5,
                       command=lambda v=val: self._duration.set(v)
                       ).pack(side="left", padx=2)
@@ -273,20 +291,20 @@ class TrafficGUI(tk.Tk):
         opt_frame.grid(row=3, column=0, sticky="ew", pady=(36, 0))
 
         tk.Label(opt_frame, text="Direction:",
-                 font=("Segoe UI", 10, "bold"), bg=PANEL, fg=TEXT
+                 font=(UI_FONT, 10, "bold"), bg=PANEL, fg=TEXT
                  ).pack(side="left")
 
         for label, val in [("Both", "BOTH"), ("-> WB", "WB"), ("<- EB", "EB")]:
             tk.Radiobutton(opt_frame, text=label,
                            variable=self._direction, value=val,
                            bg=PANEL, fg=TEXT, selectcolor=ACCENT_DARK,
-                           activebackground=PANEL, font=("Segoe UI", 9)
+                           activebackground=PANEL, font=(UI_FONT, 9)
                            ).pack(side="left", padx=4)
 
         tk.Checkbutton(opt_frame, text="Open SUMO-GUI",
                        variable=self._use_gui,
                        bg=PANEL, fg=TEXT, selectcolor=ACCENT_DARK,
-                       activebackground=PANEL, font=("Segoe UI", 9)
+                       activebackground=PANEL, font=(UI_FONT, 9)
                        ).pack(side="right")
 
     #  City ambient panel 
@@ -300,7 +318,7 @@ class TrafficGUI(tk.Tk):
             frame, text="Enable City Ambient  (whole-map traffic)",
             variable=self._city_enabled, command=self._toggle_city,
             bg=PANEL, fg=ACCENT, selectcolor=ACCENT_DARK,
-            activebackground=PANEL, font=("Segoe UI", 10, "bold")
+            activebackground=PANEL, font=(UI_FONT, 10, "bold")
         ).grid(row=0, column=0, sticky="w")
 
         body = tk.Frame(frame, bg=PANEL)
@@ -317,24 +335,24 @@ class TrafficGUI(tk.Tk):
         vcmd = (self.register(lambda s: s.isdigit() or s == ""), "%P")
 
         tk.Label(opt, text="Seed:", bg=PANEL, fg=TEXT,
-                 font=("Segoe UI", 9)).pack(side="left")
+                 font=(UI_FONT, 9)).pack(side="left")
         tk.Entry(opt, textvariable=self._ambient_seed, width=6,
                  bg="#111620", fg=TEXT, insertbackground=ACCENT,
-                 font=("Consolas", 9), relief="flat",
+                 font=(MONO_FONT, 9), relief="flat",
                  validate="key", validatecommand=vcmd
                  ).pack(side="left", padx=(4, 10))
 
         tk.Label(opt, text="Radius m:", bg=PANEL, fg=TEXT,
-                 font=("Segoe UI", 9)).pack(side="left")
+                 font=(UI_FONT, 9)).pack(side="left")
         tk.Entry(opt, textvariable=self._render_radius, width=5,
                  bg="#111620", fg=TEXT, insertbackground=ACCENT,
-                 font=("Consolas", 9), relief="flat",
+                 font=(MONO_FONT, 9), relief="flat",
                  validate="key", validatecommand=vcmd
                  ).pack(side="left", padx=(4, 10))
 
         tk.Checkbutton(opt, text="Cull far actors", variable=self._cull,
                        bg=PANEL, fg=TEXT, selectcolor=ACCENT_DARK,
-                       activebackground=PANEL, font=("Segoe UI", 9)
+                       activebackground=PANEL, font=(UI_FONT, 9)
                        ).pack(side="left")
 
         body.grid_remove()  # start collapsed
@@ -344,9 +362,9 @@ class TrafficGUI(tk.Tk):
         rowf.grid(row=row, column=0, sticky="ew", pady=1)
         rowf.columnconfigure(1, weight=1)
         tk.Label(rowf, text=label, bg=PANEL, fg=TEXT, width=16, anchor="w",
-                 font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+                 font=(UI_FONT, 9)).grid(row=0, column=0, sticky="w")
         val = tk.Label(rowf, text=str(var.get()), bg=PANEL, fg=ACCENT, width=4,
-                       font=("Consolas", 9))
+                       font=(MONO_FONT, 9))
         val.grid(row=0, column=2, padx=(6, 0))
         ttk.Scale(rowf, from_=0, to=100, variable=var, orient="horizontal",
                   command=lambda v, lb=val: lb.configure(
@@ -423,6 +441,13 @@ class TrafficGUI(tk.Tk):
         if use_gui:
             cmd.append("--gui")
 
+        # Stop button writes this file; the runner polls it and shuts down
+        # cleanly (same mechanism the campaign manager uses, any OS).
+        fd, self._stop_file = tempfile.mkstemp(prefix="sumo_runner_", suffix=".stop")
+        os.close(fd)
+        os.remove(self._stop_file)
+        cmd += ["--stop-file", self._stop_file]
+
         # City / ambient layer (only when enabled). --extend-routes moves
         # scenario spawn/despawn out to the far city gateways.
         if self._city_enabled.get():
@@ -453,9 +478,29 @@ class TrafficGUI(tk.Tk):
         threading.Thread(target=self._stream_output, daemon=True).start()
 
     def _stop(self):
-        if self._process and self._process.poll() is None:
-            self._process.terminate()
-            self._log_write("\n[Simulation terminated by user]\n")
+        proc = self._process
+        if proc and proc.poll() is None:
+            stop_file = getattr(self, "_stop_file", "")
+            if stop_file:
+                try:
+                    with open(stop_file, "w", encoding="utf-8") as f:
+                        f.write("stop")
+                except OSError:
+                    stop_file = ""
+            self._log_write("\n[Stopping simulation...]\n")
+
+            def _escalate():
+                try:
+                    proc.wait(timeout=STOP_GRACE_S if stop_file else 0.1)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    self._log_queue.put("\n[Simulation terminated by user]\n")
+                if stop_file:
+                    try:
+                        os.remove(stop_file)
+                    except OSError:
+                        pass
+            threading.Thread(target=_escalate, daemon=True).start()
         self._run_btn.configure(state="normal")
         self._stop_btn.configure(state="disabled")
 

@@ -119,7 +119,8 @@ OUT_MP4 = _resolve_out_mp4(CAPTURE_DIR, _args.out_mp4)
 OUT_MP4.parent.mkdir(parents=True, exist_ok=True)
 # Fail before rendering hundreds of frames, not after.
 if shutil.which("ffmpeg") is None:
-    sys.exit("ERROR: ffmpeg not found on PATH. Install it (winget install Gyan.FFmpeg), "
+    sys.exit("ERROR: ffmpeg not found on PATH. Install it (Windows: winget install Gyan.FFmpeg; "
+             "Ubuntu/Debian: sudo apt install ffmpeg; macOS: brew install ffmpeg), "
              "open a new terminal, and re-run.")
 print(f"Output video: {OUT_MP4}", flush=True)
 MAX_FRAMES = _args.n_frames

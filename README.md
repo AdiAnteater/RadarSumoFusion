@@ -3,6 +3,8 @@
 Dataset creation and traffic orchestration for autonomous-driving radar/camera
 datasets in CARLA, using SUMO as the traffic simulator.
 
+**How to run scenarios from the terminal (Windows and Linux): [README_RUNNING.md](README_RUNNING.md).**
+
 ## Project Structure
 
 ```
@@ -160,10 +162,17 @@ process logs displayed in the console panel.
 
 ## Sensor Rig Configuration
 
-All four layouts (`RadarCameraSetup4/8/12/14.py`) place the radar/camera rig on
-the SUMO-monitored east-west boulevard. The rig straddles the stretch with one
-radar row on each side and a camera set back at the west end looking down its
-length. Placement is centralized in `dataset/capture/radar_layout.py`.
+`dataset/setup/RadarCameraSetup.py` places the radar/camera rig on the
+SUMO-monitored east-west boulevard. The rig straddles the stretch with one radar
+row on each side and a camera set back at the west end looking down its length.
+Placement is centralized in `dataset/capture/radar_layout.py`.
+
+The radar count per row is variable (0-16 per side, at least one total). Set it
+in the GUI ("Radars south" / "Radars north"), in the campaign JSON
+(`radars_south`, `radars_north`, `radar_height_m`), or headless with
+`--radars N` (even split) or `--radars-south S --radars-north N`. Each row
+spreads its radars evenly along the stretch; radars are numbered `R1..RN` west
+to east, south before north.
 
 Rig extent:
 
@@ -193,7 +202,9 @@ the layout code:
 | `DATASET_RIG_HEADING_DEG`  | 0.0             | Rig heading                        |
 | `DATASET_RIG_LENGTH_M`     | 171.7 (4: 52.0) | Coverage length                    |
 | `DATASET_RIG_HALF_WIDTH_M` | 20.5            | Distance from center to radar rows |
-| `DATASET_RIG_HEIGHT_M`     | layout-specific | Radar mounting height              |
+| `DATASET_RIG_HEIGHT_M`     | 3.0             | Radar mounting height              |
+| `DATASET_RADARS_SOUTH`     | 4               | Radars on the south row            |
+| `DATASET_RADARS_NORTH`     | 4               | Radars on the north row            |
 | `DATASET_CAM_HEIGHT_M`     | 6.5             | Camera height                      |
 | `DATASET_CAM_END_MARGIN_M` | 16.0            | Camera setback                     |
 | `DATASET_CAM_ANCHOR_X`     | -1.0            | Camera stretch center X            |

@@ -54,6 +54,14 @@ NEARBY_DISTANCE_M = 90.0
 # reports depths up to 66 m (p90 = 42 m). radar_effective_max_depth_m() gives
 # the true reach; the candidate gate must use it, not RADAR_MAX_RANGE_M.
 RADAR_MAX_RANGE_M = 35.0
+# A/B knob: DATASET_RADAR_RANGE_M overrides the blueprint range (and every gate
+# that reads RADAR_MAX_RANGE_M). Unset = 35 m, same as before. Clamped 10-100.
+_range_env = os.environ.get("DATASET_RADAR_RANGE_M", "").strip()
+if _range_env:
+    try:
+        RADAR_MAX_RANGE_M = max(10.0, min(float(_range_env), 100.0))
+    except ValueError:
+        pass
 RADAR_HORIZONTAL_FOV_DEG = 120.0
 # 30 deg (was 60): a 60 deg cone from a 3 m pole spends most rays on the sky,
 # facades and the road within 5 m. 30 deg (+/-15) with the -6 deg down-tilt
@@ -1887,6 +1895,8 @@ def write_run_meta(run_dir, world, *, radar_count, camera_count, phase="start", 
                 "anchor_x": os.environ.get("DATASET_RIG_ANCHOR_X", ""),
                 "anchor_y": os.environ.get("DATASET_RIG_ANCHOR_Y", ""),
                 "height_m": os.environ.get("DATASET_RIG_HEIGHT_M", ""),
+                "radars_south": os.environ.get("DATASET_RADARS_SOUTH", ""),
+                "radars_north": os.environ.get("DATASET_RADARS_NORTH", ""),
                 "yaw_deg": os.environ.get("DATASET_RIG_YAW_DEG", ""),
                 "pitch_deg": os.environ.get("DATASET_RADAR_PITCH_DEG", ""),
             },
@@ -1962,7 +1972,7 @@ def _run_dataset_extrinsic_exports(world, run_dir: str) -> None:
     else:
         print(
             "Extrinsic export incomplete (see messages above). "
-            "Keep CARLA and RadarCameraSetup* running when you stop recording with Enter.",
+            "Keep CARLA and RadarCameraSetup.py running when you stop recording with Enter.",
             file=sys.stderr,
             flush=True,
         )

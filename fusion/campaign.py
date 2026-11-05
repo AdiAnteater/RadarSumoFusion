@@ -36,7 +36,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import FusionConfig, VALID_RADAR_COUNTS
+from .config import FusionConfig, radar_rig_errors, split_radar_count
 from . import orchestrator as _orc
 
 SCENARIO_NAMES = {
@@ -99,7 +99,9 @@ class CampaignConfig:
     runs: list = field(default_factory=list)       # list[RunSpec]
 
     # Sensors / clock (campaign-wide: the rig and the tick cannot change mid-capture)
-    radar_count: int = 8
+    radars_south: int = 4
+    radars_north: int = 4
+    radar_height_m: float = 3.0
     rate_hz: float = 20.0
     warmup_s: float = 20.0        # per row, not recorded: traffic reaches the stretch
     label: bool = True
@@ -124,14 +126,17 @@ class CampaignConfig:
     def fixed_delta_s(self) -> float:
         return round(1.0 / float(self.rate_hz), 6)
 
+    @property
+    def radar_count(self) -> int:
+        return int(self.radars_south) + int(self.radars_north)
+
     def validate(self) -> list:
         errs = []
         if not self.runs:
             errs.append("the campaign has no runs")
         for i, r in enumerate(self.runs, 1):
             errs += [f"run {i}: {e}" for e in r.validate()]
-        if self.radar_count not in VALID_RADAR_COUNTS:
-            errs.append(f"radar_count must be one of {VALID_RADAR_COUNTS}")
+        errs += radar_rig_errors(self.radars_south, self.radars_north, self.radar_height_m)
         if not (1.0 <= self.rate_hz <= 200.0):
             errs.append(f"rate_hz must be 1-200 (got {self.rate_hz})")
         if self.warmup_s < 0:
@@ -141,7 +146,8 @@ class CampaignConfig:
     def fusion_config(self) -> FusionConfig:
         """Adapter so the single-run stage helpers can be reused."""
         return FusionConfig(
-            radar_count=self.radar_count, rate_hz=self.rate_hz,
+            radars_south=self.radars_south, radars_north=self.radars_north,
+            radar_height_m=self.radar_height_m, rate_hz=self.rate_hz,
             label=self.label, postprocess=self.postprocess,
             capture_base_dir=self.capture_base_dir,
             carla_host=self.carla_host, carla_port=self.carla_port,
@@ -155,12 +161,16 @@ class CampaignConfig:
     # -- persistence ---------------------------------------------------------
     def to_dict(self) -> dict:
         d = asdict(self)
+        d["radar_count"] = self.radar_count
         d["runs"] = [asdict(r) for r in self.runs]
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "CampaignConfig":
         known = {k: d[k] for k in cls.__dataclass_fields__ if k in d and k != "runs"}
+        if ("radars_south" not in d and "radars_north" not in d
+                and d.get("radar_count") is not None):
+            known["radars_south"], known["radars_north"] = split_radar_count(d["radar_count"])
         cfg = cls(**known)
         cfg.runs = [RunSpec.from_dict(r) for r in d.get("runs", [])]
         return cfg
@@ -348,7 +358,8 @@ def run_campaign(cfg: CampaignConfig, log: list | None = None, on_event=None,
     total_rec = sum(r.duration for r in cfg.runs)
     say(f"[campaign] '{cfg.name or 'unnamed'}': {len(cfg.runs)} run(s), "
         f"{total_rec} s recorded + {cfg.warmup_s:.0f} s warm-up each, "
-        f"{cfg.radar_count} radars @ {cfg.rate_hz:.0f} Hz")
+        f"{cfg.radar_count} radars ({cfg.radars_south}S+{cfg.radars_north}N) "
+        f"@ {cfg.rate_hz:.0f} Hz")
 
     try:
         _orc._heal_async(fcfg, lg, when="preflight")
@@ -367,10 +378,10 @@ def run_campaign(cfg: CampaignConfig, log: list | None = None, on_event=None,
         # Capture in campaign mode: no fixed duration, sync mode, control dir.
         script = _orc.DATASET_DIR / "capture" / "CaptureRadarCameraData.py"
         extra = {
+            **_orc.rig_env(fcfg),
             "DATASET_SYNC_MODE": "1",
             "DATASET_SYNC_FIXED_DELTA_S": dt,
             "DATASET_RADAR_SENSOR_TICK_S": dt,
-            "DATASET_EXPECTED_RADAR_COUNT": cfg.radar_count,
             "DATASET_TRAFFIC_MANAGER_PORT": cfg.traffic_manager_port,
             "DATASET_LABEL_RADAR_AFTER_CAPTURE": "1" if cfg.label else "0",
             "DATASET_POSTPROCESS_AFTER_CAPTURE": "1" if cfg.postprocess else "0",

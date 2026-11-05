@@ -3,7 +3,7 @@ Query CARLA for dataset RGB cameras (role_name dataset_camera_*) and print/write
 
 World-frame pose matches ExportRadarExtrinsics.csv (x,y,z,yaw,pitch,roll in meters / degrees).
 
-Run while the RadarCameraSetup* process is still alive (e.g. from start.py before stopping children).
+Run while the RadarCameraSetup.py process is still alive (e.g. from start.py before stopping children).
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def write_camera_extrinsics_to_dataset_dir(world: carla.World, output_dir: Path)
     if not rows:
         print(
             "Camera extrinsics: no dataset_camera_* RGB sensors in the world. "
-            "Is RadarCameraSetup* still running?",
+            "Is RadarCameraSetup.py still running?",
             file=sys.stderr,
         )
         return False
@@ -192,7 +192,7 @@ def main() -> int:
         if not rows:
             print("No RGB cameras with role_name prefix 'dataset_camera_' found.")
             print(
-                "(Spawn a layout that includes the dataset camera: RadarCameraSetup4/8/12/14.py.)"
+                "(Spawn the dataset camera with setup/RadarCameraSetup.py.)"
             )
             return 0
         for r in rows:

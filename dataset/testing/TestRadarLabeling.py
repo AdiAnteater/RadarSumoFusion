@@ -5,7 +5,7 @@ Scores returns with an actor in the detection beam (incl. parked) or |velocity| 
 Static clutter with no actor in-beam is not scored. Matching uses beam/depth candidates,
 primary + legacy hit, and single-target fallbacks. Use --debug-draws to visualize hits in CARLA.
 
-Run standalone (after setup/RadarCameraSetup* and traffic are up):
+Run standalone (after setup/RadarCameraSetup.py and traffic are up):
     python testing/TestRadarLabeling.py
 
 Or via Start.py test mode:
@@ -859,13 +859,13 @@ def main() -> int:
             if len(all_radars) >= expected and len(radar_sensors) == 0:
                 print(
                     "  Radars exist but role_name is missing/wrong. "
-                    "Keep RadarCameraSetup*.py running; it must set role_name "
+                    "Keep RadarCameraSetup.py running; it must set role_name "
                     f"to {DATASET_RADAR_ROLE_PREFIX}R1 etc.",
                     file=sys.stderr,
                 )
             elif len(all_radars) == 0:
                 print(
-                    "  No radars in the world. Start RadarCameraSetup*.py first and wait until "
+                    "  No radars in the world. Start RadarCameraSetup.py first and wait until "
                     "you see 'Spawned R1'..'Spawned R8'. Do not press Enter in that window.",
                     file=sys.stderr,
                 )

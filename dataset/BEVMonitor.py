@@ -408,7 +408,8 @@ def run() -> int:
     args = parse_args()
 
     # Decide output mode. Auto-pick snapshots when no display is available.
-    has_display = bool(os.environ.get("DISPLAY")) or sys.platform == "win32"
+    has_display = (bool(os.environ.get("DISPLAY")) or bool(os.environ.get("WAYLAND_DISPLAY"))
+                   or sys.platform in ("win32", "darwin"))
     if not (args.display or args.snapshots or args.video):
         if has_display:
             args.display = True
@@ -456,7 +457,7 @@ def run() -> int:
     if not radars:
         print(
             "[BEV] No dataset_radar_* sensors found yet. "
-            "Run RadarCameraSetup{4,8,12,14}.py first."
+            "Run setup/RadarCameraSetup.py first."
         )
     print(f"[BEV] Found {len(radars)} radars, {len(cameras)} cameras.")
 

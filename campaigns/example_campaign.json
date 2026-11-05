@@ -1,0 +1,16 @@
+{
+  "name": "example",
+  "runs": [
+    {"scenario": 1, "density": 40, "duration": 300, "direction": "BOTH",
+     "ambient_vehicles": 20, "pedestrians": 20, "bicycles": 10, "seed": 42, "signals": "green"},
+    {"scenario": 3, "density": 60, "duration": 300, "direction": "BOTH",
+     "ambient_vehicles": 20, "pedestrians": 20, "bicycles": 10, "seed": 42, "signals": "green"},
+    {"scenario": 4, "density": 70, "duration": 300, "direction": "BOTH",
+     "ambient_vehicles": 20, "pedestrians": 20, "bicycles": 10, "seed": 42, "signals": "green"}
+  ],
+  "radar_count": 8,
+  "rate_hz": 20.0,
+  "warmup_s": 20.0,
+  "label": true,
+  "postprocess": true
+}

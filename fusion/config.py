@@ -13,7 +13,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-VALID_RADAR_COUNTS = (4, 8, 12, 14)
+MAX_RADARS_PER_SIDE = 16
+SETUP_SCRIPT_NAME = "RadarCameraSetup.py"
+
+
+def split_radar_count(total: int) -> tuple:
+    """Even split of a total radar count into (south, north); south takes the odd one."""
+    total = max(0, int(total))
+    return (total + 1) // 2, total // 2
+
+
+def radar_rig_errors(south: int, north: int, height_m: float) -> list:
+    errs = []
+    for side, n in (("south", south), ("north", north)):
+        if not (0 <= n <= MAX_RADARS_PER_SIDE):
+            errs.append(f"radars_{side} must be 0-{MAX_RADARS_PER_SIDE} (got {n})")
+    if south + north < 1:
+        errs.append("need at least one radar (south + north >= 1)")
+    if not (0.3 <= height_m <= 12.0):
+        errs.append(f"radar_height_m must be 0.3-12 (got {height_m})")
+    return errs
 
 
 @dataclass
@@ -32,7 +51,9 @@ class FusionConfig:
     sumo_gui: bool = False            # show sumo-gui alongside the run
 
     # --- Sensors / capture (DatasetCreation) ---
-    radar_count: int = 8              # 4 | 8 | 12 | 14 -> setup/RadarCameraSetupN.py
+    radars_south: int = 4             # radars on the south kerb row (0-16)
+    radars_north: int = 4             # radars on the north kerb row (0-16)
+    radar_height_m: float = 3.0       # radar mount height above the road
     label: bool = True                # run radar labeling after capture (DC default)
     postprocess: bool = True          # run post-processing after capture (DC default)
     capture_base_dir: str = ""        # optional override for the output root
@@ -58,6 +79,10 @@ class FusionConfig:
         """CARLA fixed_delta_seconds / SUMO step / radar sensor_tick."""
         return round(1.0 / float(self.rate_hz), 6)
 
+    @property
+    def radar_count(self) -> int:
+        return int(self.radars_south) + int(self.radars_north)
+
     def validate(self) -> "FusionConfig":
         errs = []
         if not (1 <= self.scenario <= 11):
@@ -68,9 +93,7 @@ class FusionConfig:
             errs.append(f"duration must be > 0 (got {self.duration})")
         if self.direction not in ("WB", "EB", "BOTH"):
             errs.append(f"direction must be WB|EB|BOTH (got {self.direction})")
-        if self.radar_count not in VALID_RADAR_COUNTS:
-            errs.append(f"radar_count must be one of {VALID_RADAR_COUNTS} "
-                        f"(got {self.radar_count})")
+        errs += radar_rig_errors(self.radars_south, self.radars_north, self.radar_height_m)
         if not (1.0 <= self.rate_hz <= 200.0):
             errs.append(f"rate_hz must be 1-200 (got {self.rate_hz})")
         # CARLA rejects fixed_delta_seconds above ~0.1 s in some builds; keep sane.
@@ -88,7 +111,7 @@ class FusionConfig:
         return list(self._errors)
 
     def setup_script_name(self) -> str:
-        return f"RadarCameraSetup{self.radar_count}.py"
+        return SETUP_SCRIPT_NAME
 
     def as_capture_base(self) -> str:
         return str(Path(self.capture_base_dir).expanduser()) if self.capture_base_dir else ""
