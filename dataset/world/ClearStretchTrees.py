@@ -12,13 +12,15 @@ so a fresh map reload brings them back. This runs on the live world before any
 sensor exists, which is safe (see the DatasetCreation notes on why clearing
 env objects mid-run near live GPU sensors can crash CARLA).
 
-The stretch box comes from the verified net geometry:
-    boulevard runs along +X, x in [-28.7, 26.4] (~55 m),
-    carriageways span y in [5.4 .. 36.0], mid ~(-1.0, 20.7).
+The stretch box comes from the verified net geometry. The radar rig (8+
+radars) now spans the WHOLE boulevard:
+    junction 719 stop line x = -88.6 to junction 532 stop line x = 83.1,
+    carriageways span y in [5.4 .. 36.0], mid ~(-2.75, 20.7).
+(The original monitored stretch was only x in [-28.7, 26.4].)
 A few metres of margin are added so trees just off the ends/kerbs are caught.
 All bounds are env-tunable so the region can be nudged without editing code:
-    DATASET_TREE_CLEAR_X_MIN   default -35.0
-    DATASET_TREE_CLEAR_X_MAX   default  33.0
+    DATASET_TREE_CLEAR_X_MIN   default -95.0
+    DATASET_TREE_CLEAR_X_MAX   default  90.0
     DATASET_TREE_CLEAR_Y_MIN   default   3.0
     DATASET_TREE_CLEAR_Y_MAX   default  38.0
 Set DATASET_TREE_CLEAR_DRY_RUN=1 to only report matches without hiding them.
@@ -41,8 +43,8 @@ from carla_connect import get_world
 
 
 # Default stretch box (CARLA world coords). See module docstring for the source.
-DEFAULT_X_MIN = -35.0
-DEFAULT_X_MAX = 33.0
+DEFAULT_X_MIN = -95.0
+DEFAULT_X_MAX = 90.0
 DEFAULT_Y_MIN = 3.0
 DEFAULT_Y_MAX = 38.0
 

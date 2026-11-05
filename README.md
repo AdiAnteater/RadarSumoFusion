@@ -174,28 +174,42 @@ in the GUI ("Radars south" / "Radars north"), in the campaign JSON
 spreads its radars evenly along the stretch; radars are numbered `R1..RN` west
 to east, south before north.
 
-Default monitored stretch:
+Rig extent:
 
 - Direction: East-West
-- X range: approximately -28.7 to 26.4
-- Y range: approximately 5.4 to 36.0
-- Center: approximately (-1.0, 20.7)
+- 8, 12 and 14 radars: the whole boulevard, junction 719 stop line to junction
+  532 stop line, X approximately -88.6 to 83.1 (~172 m, center -2.75). First and
+  last stations sit on the stop lines.
+- 4 radars: the original stretch (edges 20 / -20), X approximately -28.7 to 26.4,
+  center -1.0.
+- Y range: approximately 5.4 to 36.0 (radar rows at y 0.2 and 41.2)
+- The overview camera stays on the original stretch for every radar count.
+
+Spawn exclusion: no SUMO vehicle, bicycle or pedestrian spawns or despawns inside
+the full boulevard box (x -88.6 to 83.1, between the radar rows) grown by 10 m.
+`runner.py` checks every route file against it before SUMO starts
+(`ambient_traffic.check_spawn_exclusion`). The CARLA-native spawners
+(`SpawnCarsAtPosition14.py`, `SpawnPedestriansAcrossMap.py`) skip spawn points
+inside the same box (`radar_layout.in_spawn_exclusion_zone`).
 
 The rig position can be adjusted through environment variables without modifying
 the layout code:
 
 | Environment variable       | Default         | Description                        |
 |----------------------------|-----------------|------------------------------------|
-| `DATASET_RIG_ANCHOR_X`     | -1.0            | Center X position                  |
+| `DATASET_RIG_ANCHOR_X`     | -2.75 (4: -1.0) | Center X position                  |
 | `DATASET_RIG_ANCHOR_Y`     | 20.7            | Center Y position                  |
 | `DATASET_RIG_HEADING_DEG`  | 0.0             | Rig heading                        |
-| `DATASET_RIG_LENGTH_M`     | 52.0            | Coverage length                    |
+| `DATASET_RIG_LENGTH_M`     | 171.7 (4: 52.0) | Coverage length                    |
 | `DATASET_RIG_HALF_WIDTH_M` | 20.5            | Distance from center to radar rows |
 | `DATASET_RIG_HEIGHT_M`     | 3.0             | Radar mounting height              |
 | `DATASET_RADARS_SOUTH`     | 4               | Radars on the south row            |
 | `DATASET_RADARS_NORTH`     | 4               | Radars on the north row            |
 | `DATASET_CAM_HEIGHT_M`     | 6.5             | Camera height                      |
 | `DATASET_CAM_END_MARGIN_M` | 16.0            | Camera setback                     |
+| `DATASET_CAM_ANCHOR_X`     | -1.0            | Camera stretch center X            |
+| `DATASET_CAM_STRETCH_LENGTH_M` | 52.0        | Camera stretch length              |
+| `DATASET_SPAWN_EXCLUSION_MARGIN_M` | 10.0    | CARLA spawner exclusion margin     |
 
 For example, `DATASET_RIG_HALF_WIDTH_M=12` moves the radar rows closer to the
 traffic lanes.

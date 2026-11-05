@@ -7,6 +7,7 @@ this tick.
 """
 
 import math
+import re
 
 
 # Extra metres of sidewalk correction allowed on top of the SUMO step.
@@ -16,14 +17,34 @@ CORRECTION_M = 0.05
 # Below this, SUMO barely moved (waiting at a light). The body stays put.
 STOPPED_M = 0.02
 
-# A crossing or walking area has to last this many ticks before it is real.
+# A zebra crossing has to last this many ticks before it is real.
 # One lane-id flicker at the kerb does not count.
 CROSSING_COMMIT_TICKS = 3
+
+# The rendered body may move this much faster than SUMO for a moment, so it can
+# catch up after following the kerb round a corner (longer than SUMO's chord
+# across the walking area) instead of trailing behind and cutting the corner.
+CATCHUP_FACTOR = 1.4
+
+_ZEBRA_RE = re.compile(r"^:.+_c\d+_\d+$")
+_WALKINGAREA_RE = re.compile(r"^:.+_w\d+_\d+$")
 
 
 def is_crossing_lane(lane_id: str) -> bool:
     """True for a SUMO crossing or walking-area lane."""
     return bool(lane_id) and lane_id.startswith(":") and ("_c" in lane_id or "_w" in lane_id)
+
+
+def is_zebra_crossing(lane_id: str) -> bool:
+    """True for a SUMO crossing lane (":189_c0_0"). Since build_network.py puts
+    every crossing on a CARLA zebra, SUMO's position on it is on the zebra."""
+    return bool(lane_id) and bool(_ZEBRA_RE.match(lane_id))
+
+
+def is_walking_area(lane_id: str) -> bool:
+    """True for a SUMO walking area (":189_w0_0"). These span the whole road
+    cross-section on this net, so SUMO's position on one is often in the road."""
+    return bool(lane_id) and bool(_WALKINGAREA_RE.match(lane_id))
 
 
 def _dist(a, b) -> float:
@@ -66,8 +87,9 @@ def choose_sidewalk_point(raw, nearest, locked, snap_max,
 
 
 def note_crossing(crossing_ticks: int, lane_id: str) -> int:
-    """Consecutive ticks spent on a crossing or walking area."""
-    if is_crossing_lane(lane_id):
+    """Consecutive ticks spent on a zebra crossing. A walking area is not a
+    crossing: there the walker stays on the CARLA pavement."""
+    if is_zebra_crossing(lane_id):
         return crossing_ticks + 1
     return 0
 
@@ -85,8 +107,10 @@ def crossing_will_be_real(state, lane_id: str,
 
 def step_toward(prev, target, sumo_moved: float,
                 correction_m: float = CORRECTION_M,
-                stopped_m: float = STOPPED_M):
-    """Move ``prev`` toward ``target`` by at most the distance SUMO moved.
+                stopped_m: float = STOPPED_M,
+                catchup: float = 1.0):
+    """Move ``prev`` toward ``target`` by at most the distance SUMO moved
+    (times ``catchup``).
 
     A few extra centimetres let a real sidewalk offset close. If SUMO barely
     moved, stay at ``prev``. The first tick (no previous point) uses the target.
@@ -95,7 +119,7 @@ def step_toward(prev, target, sumo_moved: float,
         return target
     if sumo_moved < stopped_m:
         return prev
-    max_step = sumo_moved + correction_m
+    max_step = sumo_moved * catchup + correction_m
     dx = target[0] - prev[0]
     dy = target[1] - prev[1]
     dist = math.hypot(dx, dy)
@@ -122,13 +146,21 @@ def yaw_from_step(prev_yaw, prev_xy, xy, min_move: float = STOPPED_M):
 def next_pose(raw, sumo_yaw, lane_id, nearest, nearest_lane, state, snap_max,
               correction_m: float = CORRECTION_M,
               stopped_m: float = STOPPED_M,
-              commit_ticks: int = CROSSING_COMMIT_TICKS):
+              commit_ticks: int = CROSSING_COMMIT_TICKS,
+              catchup: float = CATCHUP_FACTOR):
     """Return ``(x, y, yaw, state)`` for this tick.
 
-    On a sidewalk the target is the locked pavement. Once a crossing has lasted
-    ``commit_ticks``, the target is SUMO's position and the body walks toward
-    it. The lock is dropped only then, and only once that pavement is farther
-    than ``snap_max``. The first tick a person appears uses the target directly.
+    On a sidewalk the target is the locked pavement. Once a zebra crossing has
+    lasted ``commit_ticks``, the target is SUMO's position (on the zebra) and
+    the body walks toward it. The lock is dropped only then, and only once that
+    pavement is farther than ``snap_max``.
+
+    On a walking area SUMO's position is NOT used: ``nearest`` is the CARLA
+    pavement (or zebra) nearest to it, found by the caller without the lane
+    lock, so the walker follows the kerb round a corner and onto the zebra
+    instead of cutting across the road. With no such point the walker holds
+    the pavement it has. The first tick a person appears uses the target
+    directly.
     """
     state = state or {}
     prev_raw = state.get("prev_raw")
@@ -146,6 +178,17 @@ def next_pose(raw, sumo_yaw, lane_id, nearest, nearest_lane, state, snap_max,
 
     if real:
         target = raw
+    elif is_walking_area(lane_id):
+        if nearest is not None:
+            target = nearest
+            locked = nearest
+            locked_lane = nearest_lane
+        elif locked is not None:
+            target = locked
+        elif rendered is not None:
+            target = rendered
+        else:
+            target = raw
     else:
         chosen = choose_sidewalk_point(
             raw, nearest, locked, snap_max, nearest_lane, locked_lane)
@@ -161,7 +204,8 @@ def next_pose(raw, sumo_yaw, lane_id, nearest, nearest_lane, state, snap_max,
         new_xy = target
         new_yaw = sumo_yaw
     else:
-        new_xy = step_toward(rendered, target, sumo_moved, correction_m, stopped_m)
+        new_xy = step_toward(rendered, target, sumo_moved, correction_m, stopped_m,
+                             catchup)
         new_yaw = yaw_from_step(
             sumo_yaw if yaw is None else yaw, rendered, new_xy, stopped_m)
 

@@ -17,6 +17,7 @@ import time
 import carla
 
 from carla_connect import get_world
+from capture.radar_layout import in_spawn_exclusion_zone
 
 
 # Primary spawn anchor: map spawn-point index 144 is the monitored corridor
@@ -113,6 +114,17 @@ def wait_until_vehicle_moves_away(
         time.sleep(poll_s)
 
     return False, "timeout"
+
+
+def outside_radar_zone(points, dirs=None):
+    """Drop spawn transforms inside the radar spawn exclusion zone (the whole
+    monitored road, see radar_layout.spawn_exclusion_box). Keeps an optional
+    parallel direction list aligned."""
+    keep = [i for i, tr in enumerate(points)
+            if not in_spawn_exclusion_zone(tr.location.x, tr.location.y)]
+    if dirs is None:
+        return [points[i] for i in keep]
+    return [points[i] for i in keep], [dirs[i] for i in keep]
 
 
 def get_nearby_spawn_points(spawn_points, center_transform, radius_m):
@@ -669,6 +681,7 @@ def recirculate_traffic_until_interrupted(
             radar_positions=get_radar_positions(world),
             radar_clearance_m=RADAR_SPAWN_CLEARANCE_M,
         )
+    drive_in_points = outside_radar_zone(drive_in_points)
     if not drive_in_points:
         print("Recirculation: no drive-in points; falling back to plain autopilot monitor.",
               flush=True)
@@ -925,6 +938,15 @@ def try_spawn_cars(
             flush=True,
         )
 
+    # No car may spawn on the radar-monitored road, in any spawn mode.
+    _n_before = len(candidate_points)
+    candidate_points = outside_radar_zone(candidate_points)
+    if _n_before != len(candidate_points):
+        print(f"Spawn exclusion: dropped {_n_before - len(candidate_points)} spawn "
+              f"points inside the radar zone.", flush=True)
+    if not candidate_points:
+        raise RuntimeError("Every spawn candidate is inside the radar spawn exclusion "
+                           "zone. Widen SPAWN_RADIUS_M or move the spawn centre.")
     vehicle_bps = get_vehicle_blueprints(world)
     truck_bps, nontruck_bps = split_truck_bps(vehicle_bps)
     truck_fraction = truck_fraction_from_env()

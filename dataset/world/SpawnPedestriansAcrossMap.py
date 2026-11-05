@@ -28,6 +28,7 @@ import time
 import carla
 
 from carla_connect import get_world
+from capture.radar_layout import in_spawn_exclusion_zone, spawn_exclusion_box
 
 
 DEFAULT_PED_COUNT = 30
@@ -289,9 +290,16 @@ _PED_REGION_MAX_NAV_ATTEMPTS = 200
 
 
 def get_nav_location_in_region(world, region):
-    """Rejection-sample navmesh points until one lands inside region (cx, cy, r_m)."""
+    """Rejection-sample navmesh points until one lands inside region (cx, cy, r_m)
+    and outside the radar spawn exclusion zone."""
+    # Never spawn inside the radar-monitored road (see radar_layout
+    # spawn_exclusion_box); walkers may still roam into it afterwards.
     if region is None:
-        return world.get_random_location_from_navigation()
+        for _ in range(_PED_REGION_MAX_NAV_ATTEMPTS):
+            loc = world.get_random_location_from_navigation()
+            if loc is not None and not in_spawn_exclusion_zone(loc.x, loc.y):
+                return loc
+        return None
     cx, cy, r = region
     r_sq = r * r
     for _ in range(_PED_REGION_MAX_NAV_ATTEMPTS):
@@ -300,7 +308,7 @@ def get_nav_location_in_region(world, region):
             continue
         dx = loc.x - cx
         dy = loc.y - cy
-        if dx * dx + dy * dy <= r_sq:
+        if dx * dx + dy * dy <= r_sq and not in_spawn_exclusion_zone(loc.x, loc.y):
             return loc
     return None
 
@@ -512,6 +520,13 @@ def spawn_corridor_crossers(client, world, count, cfg):
         start_south = (i % 2 == 0)
         y = y_south if start_south else y_north
         d = 1.0 if start_south else -1.0  # +y heads toward the north curb
+        if in_spawn_exclusion_zone(x, y):
+            # Crossers stand at a curb, which on the monitored road is inside
+            # the spawn exclusion zone. Move the crossing band off the radar
+            # road (DATASET_PED_CROSSING_*) to use them.
+            print(f"  crosser {i} skipped: spawn ({x:.1f}, {y:.1f}) is inside the "
+                  f"radar spawn exclusion zone {spawn_exclusion_box()}", flush=True)
+            continue
         bp = random.choice(walker_bps)
         if bp.has_attribute("is_invincible"):
             bp.set_attribute("is_invincible", "true")

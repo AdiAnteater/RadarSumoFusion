@@ -101,17 +101,18 @@ Radars are numbered `R1..RN` west to east, south before north at the same
 offset, so equal rows give R1 south, R2 north, R3 south, ... (identical to the
 old fixed 4/8/12/14 layouts at the same height). Campaign files saved before
 this change with only `radar_count` load as an even split (south takes the odd
-one).
+one). 
+With 8 or more radars in total the rows span the whole boulevard (junction 719 stop line x -88.6 to junction 532 stop line x 83.1, ~172 m); with fewer they stay on the original 55 m stretch.
 
 All placement numbers live in one place (`dataset/capture/radar_layout.py`) and
 are env-tunable, so you can nudge the rig live in CARLA without editing code:
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `DATASET_RIG_ANCHOR_X` | -1.0 | stretch mid X (CARLA world) |
+| `DATASET_RIG_ANCHOR_X` | -2.75 (4 radars: -1.0) | rig mid X (CARLA world) |
 | `DATASET_RIG_ANCHOR_Y` | 20.7 | boulevard cross-section mid Y |
 | `DATASET_RIG_HEADING_DEG` | 0.0 | stretch direction (0 = east-west) |
-| `DATASET_RIG_LENGTH_M` | 52.0 | along-stretch coverage |
+| `DATASET_RIG_LENGTH_M` | 171.7 (4 radars: 52.0) | along-stretch coverage |
 | `DATASET_RIG_HALF_WIDTH_M` | 20.5 | centre -> each radar row (rows ~y0.2 / y41.2) |
 | `DATASET_RIG_HEIGHT_M` | 3.0 | radar mount height (set from the GUI / `--radar-height`) |
 | `DATASET_RADARS_SOUTH` / `DATASET_RADARS_NORTH` | 4 / 4 | radars per kerb row (set from the GUI / campaign JSON / CLI) |
@@ -306,8 +307,9 @@ a thread pool). The old single thread fell behind on slower machines, outran the
 600-frame snapshot cache and then silently skipped every frame ("41 frames then
 nothing"). Every frame is saved now, with or without actors nearby.
 
-Derived from the net: boulevard runs along +X, x in [-28.7, 26.4] (~55 m),
-carriageways span y in [5.4 .. 36.0], mid ~(-1.0, 20.7). Lower
+Derived from the net: the boulevard runs along +X from x -88.6 to 83.1 (edges
+18-21, ~172 m); the original stretch (edges 20 / -20) is x in [-28.7, 26.4].
+Carriageways span y in [5.4 .. 36.0], mid y ~20.7. Lower
 `DATASET_RIG_HALF_WIDTH_M` (e.g. 12) to pull the rows closer to the lanes.
 
 ## Post-run freeze fix

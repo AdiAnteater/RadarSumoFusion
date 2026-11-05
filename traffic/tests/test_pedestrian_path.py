@@ -83,7 +83,7 @@ class SidewalkLockTests(unittest.TestCase):
         x, y, yaw, state = ped.next_pose(
             raw, 180.0, ":189_c0_0", None, None, state, snap_max=3.0)
         moved = math.hypot(x, y)
-        self.assertAlmostEqual(moved, 0.12 + ped.CORRECTION_M)
+        self.assertAlmostEqual(moved, 0.12 * ped.CATCHUP_FACTOR + ped.CORRECTION_M)
         self.assertGreater(math.hypot(x - raw[0], y - raw[1]), 1.0)
         self.assertNotAlmostEqual(yaw, 180.0, places=3)
         self.assertEqual(state["crossing_ticks"], ped.CROSSING_COMMIT_TICKS)
@@ -119,6 +119,34 @@ class SidewalkLockTests(unittest.TestCase):
         self.assertTrue(ped.is_crossing_lane(":189_c0_0"))
         self.assertTrue(ped.is_crossing_lane(":189_w1_0"))
         self.assertFalse(ped.is_crossing_lane("20_0"))
+        self.assertTrue(ped.is_zebra_crossing(":189_c0_0"))
+        self.assertFalse(ped.is_zebra_crossing(":189_w1_0"))
+        self.assertTrue(ped.is_walking_area(":19.18_w1_0"))
+        self.assertFalse(ped.is_walking_area(":189_c0_0"))
+        self.assertFalse(ped.is_walking_area("-20_0"))
+        self.assertFalse(ped.is_zebra_crossing(":189_12_0"))   # vehicle internal lane
+
+    def test_walking_area_never_uses_the_raw_road_position(self):
+        # SUMO cuts the corner 4 m into the road; the pavement is at (0, 0).
+        state = {"locked": (0.0, -1.0), "locked_lane": (7, 0),
+                 "rendered": (0.0, -1.0), "yaw": 90.0,
+                 "prev_raw": (3.5, 2.0), "crossing_ticks": 0}
+        x, y, _, state = ped.next_pose(
+            (4.0, 2.0), 90.0, ":719_w1_0", (0.0, 0.0), (9, 0), state, snap_max=3.0)
+        self.assertLess(math.hypot(x, y + 1.0), 1.0)      # walked toward the kerb
+        self.assertGreater(math.hypot(x - 4.0, y - 2.0), 3.0)
+        # A new sidewalk lane round the corner is adopted on a walking area.
+        self.assertEqual(state["locked_lane"], (9, 0))
+        # No pavement found: hold the lock, never the road.
+        x, y, _, state = ped.next_pose(
+            (4.5, 2.0), 90.0, ":719_w1_0", None, None, state, snap_max=3.0)
+        self.assertGreater(math.hypot(x - 4.5, y - 2.0), 3.0)
+
+    def test_a_walking_area_does_not_count_as_a_crossing(self):
+        state = {"crossing_ticks": ped.CROSSING_COMMIT_TICKS + 5}
+        self.assertFalse(ped.crossing_will_be_real(state, ":189_w0_0"))
+        self.assertTrue(ped.crossing_will_be_real(
+            {"crossing_ticks": ped.CROSSING_COMMIT_TICKS - 1}, ":189_c0_0"))
 
 
 class _CrossingShare:

@@ -299,6 +299,10 @@ def write_sumocfg(net_file: str, route_file: str, add_files: list,
         # vehicle can legitimately wait ~95 s for its turn; at 60 s SUMO was
         # teleporting them ("waited too long (yield)") out of the side streets.
         '        <time-to-teleport value="150"/>',
+        # A jam teleport takes a vehicle off the road and re-inserts it further
+        # along its route -- possibly in the middle of the radar zone, which is
+        # a spawn there. Remove stuck vehicles instead of teleporting them.
+        '        <time-to-teleport.remove value="true"/>',
         '        <lanechange.duration value="3"/>',
         # route-steps -1 loads the ENTIRE route file up front instead of
         # streaming it in 200 s windows. This is not a tuning knob, it fixes
@@ -977,6 +981,19 @@ def run(scenario_id: int, density: int, duration: int,
         rc = ambient_traffic.inject_ambient(rc, ambient_xml)
         with open(route_file, "w", encoding="utf-8") as f:
             f.write(rc)
+
+    # --- Spawn exclusion: nothing may spawn or despawn on the radar road ---
+    # The rig spans the whole boulevard (junction 719 to junction 532). Every
+    # spawn / despawn point in the final route file is checked against that
+    # zone; a violation is a routing bug, so the run stops here instead of
+    # recording cars or walkers popping in under the radars.
+    if AMBIENT_AVAILABLE and ambient_traffic.sumolib is not None:
+        with open(route_file, "r", encoding="utf-8") as f:
+            violations = ambient_traffic.check_spawn_exclusion(net_file, f.read())
+        if violations:
+            sys.exit("ERROR: spawn/despawn inside the radar zone:\n  "
+                     + "\n  ".join(violations))
+        print("  Spawns   : all spawn/despawn points outside the radar zone")
 
     # Bus stop additional is written at runtime only for scenario 5
     add_files    = [ADD_FILE]

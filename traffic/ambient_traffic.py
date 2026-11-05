@@ -42,12 +42,26 @@ This replaces the previous extended routes, which had two problems:
 
 PEDESTRIANS ON THE MONITORED STRETCH
 ------------------------------------
-Six sidewalk corridors, all of which traverse edge 20 or -20 and all of which
-use a real crossing. Verified on the rebuilt net: 100% departure rate, 100%
-reach the stretch, nearest spawn point 91 m from the stretch centre.
+Four sidewalk corridors, one per sidewalk and direction, each walking the FULL
+road (edges 18-21 / -18..-21) end to end. Every corridor starts and ends on a
+perimeter sidewalk outside the radar zone, so nobody spawns or despawns inside
+it. Verified headless (SUMO 1.28, rebuilt net): 60/60 walkers inserted, every
+walker traverses all four boulevard edges, nearest spawn/despawn > 15 m outside
+the zone.
 
-Two more walks (STRETCH_PED_CROSSING_CORRIDORS) cross the boulevard on its
-crosswalks at junctions 189 and 841, so some pedestrians are on the carriageway.
+
+SPAWN EXCLUSION ZONE
+--------------------
+The radar rig spans the whole boulevard: junction 719 stop line (CARLA x -88.6)
+to junction 532 stop line (x 83.1), between the radar rows (y 0.2 .. 41.2).
+No vehicle or pedestrian may spawn or despawn inside that box grown by
+SPAWN_EXCLUSION_MARGIN_M. check_spawn_exclusion() verifies a finished route
+file against it. Mirrors dataset/capture/radar_layout.py -- keep in sync.
+
+Two more walks (STRETCH_PED_CROSSING_CORRIDORS) cross the boulevard on the
+zebras at its two ends (junction 719 west, 532 east), so some pedestrians are
+on the carriageway. Each walks one sidewalk the full length, crosses, and
+walks back on the other; spawn and despawn stay outside the radar zone.
 They take PED_CROSSING_SHARE (default 0.3) of the stretch pedestrian budget;
 set SUMO_PED_CROSSING_SHARE=0 to go back to sidewalk-only walks.
 """
@@ -107,42 +121,62 @@ EB_ALT_SHARE = 0.25
 # and -8 (19 m), which are too short to insert anything large.
 AMBIENT_GATEWAYS = ["-1", "1", "5", "-5", "6", "-6", "10", "-10"]
 
-# Sidewalk walks along the monitored boulevard. Each entry is
-# (id_suffix, edge list). Pedestrians walk these end to end; SUMO routes them
-# over the walking areas built by build_network.py.
+# Sidewalk walks along the monitored boulevard. Pedestrians walk these end to
+# end; SUMO routes them over the walking areas built by build_network.py.
 #
 # The lists have to be connected. Writing the same one-way edge ids backwards
 # is not a sidewalk in the other direction: SUMO fills each gap with a path
-# through the junction, and that path waited out the red at 719 (the corridor
-# green is about 90 s). Corridors that crossed the boulevard are gone for the
-# same reason. These walks start on the stretch (edges 20 and -20) and continue
-# along that sidewalk until the next traffic light, without taking the turn
-# through it. The two directions are the two sidewalks; each is named twice so
-# the pedestrian budget stays on them. People still pass through a walking area
-# where the sidewalk changes edge. They are not parked there for the car green.
+# through the junction, and a path that crosses the road waits out the red at
+# 719 (the corridor green is about 90 s). So each corridor stays on ONE
+# boulevard sidewalk and joins the perimeter on the same side through a
+# walking area only (no boulevard crossing at 719 or 532). The side-street
+# crossings at 189 and 841 are on the way, as before.
+# (id_suffix, walk edges, departPos on first edge, arrivalPos on last edge).
+# Each corridor walks one boulevard sidewalk end to end. The first and last
+# edges are inner-ring perimeter sidewalks that meet that boulevard sidewalk at
+# junction 719 / 532 without crossing the boulevard:
+#   north sidewalk (WB edges 18-21): 10 0 3 (NE)  <->  -6 (NW)
+#   south sidewalk (EB edges -18..-21): 2 1 (SE)  <->  -5 (SW)
+# departPos / arrivalPos put every spawn and despawn well outside the zone:
+#   10 @75 -> CARLA (82.5, -43.8)    -6 @35 -> (-92.0, -36.6)
+#   1  @35 -> (82.9, 115.0)          -5 @45 -> (-95.4, 88.9)
 STRETCH_PED_CORRIDORS = [
-    ("n_wb", "20 19 18"),
-    ("n_eb", "-20 -21"),
-    ("s_eb", "-20 -21"),
-    ("s_wb", "20 19 18"),
+    ("n_wb", "10 0 3 21 20 19 18 -6", 75.0, 35.0),
+    ("n_eb", "-6 18 19 20 21 3 0 10", 35.0, 75.0),
+    ("s_eb", "-5 -18 -19 -20 -21 2 1", 45.0, 35.0),
+    ("s_wb", "1 2 -21 -20 -19 -18 -5", 35.0, 45.0),
 ]
 
-# Walks that CROSS the boulevard on its two crosswalks, so the dataset has
-# pedestrians on the carriageway. Each one walks the full stretch on one
-# sidewalk, crosses at the end of the block, and walks back along the other
-# sidewalk before leaving the way the sidewalk corridors above do:
-#   x_west: edge 20 sidewalk (CARLA y ~5) west to junction 189, crosswalk
-#           :189_c0 (CARLA x ~-30, signalised), then -20 east and out via -21.
-#   x_east: edge -20 sidewalk (CARLA y ~36) east to junction 841, crosswalk
-#           :841_c2 (CARLA x ~28, unsignalised priority junction), then 20
-#           west and out via 19 18.
-# 20 and -20 share both end nodes, so SUMO picks the junction from the edge
-# order: 20 ends at 189 where -20 starts, -20 ends at 841 where 20 starts.
-# Checked headless (SUMO, TraCI lane ids): every x_west walker uses :189_c0
-# and every x_east walker uses :841_c2.
+# --- Spawn exclusion zone (CARLA world coords) -- see docstring ---
+# Full radar-monitored road. Mirrors dataset/capture/radar_layout.py.
+RADAR_ZONE_X_WEST = -88.6     # west end of edge 18 (junction 719 stop line)
+RADAR_ZONE_X_EAST = 83.1      # east end of edge 21 (junction 532 stop line)
+RADAR_ZONE_Y_SOUTH = 0.2      # radar row (rig anchor y 20.7 - half width 20.5)
+RADAR_ZONE_Y_NORTH = 41.2     # radar row (rig anchor y 20.7 + half width 20.5)
+SPAWN_EXCLUSION_MARGIN_M = 10.0
+# Boulevard edges fully inside the zone. Never used as an ambient endpoint.
+RADAR_ZONE_EDGES = {"18", "19", "20", "21", "-18", "-19", "-20", "-21"}
+
+SUMO_NET_OFFSET = (109.34, 135.96)
+
+
+def sumo_to_carla_xy(x, y):
+    """Verified runtime transform (do not re-derive)."""
+    return x - SUMO_NET_OFFSET[0], -(y - SUMO_NET_OFFSET[1])
+
+
+def in_radar_zone_carla(x, y, margin=SPAWN_EXCLUSION_MARGIN_M):
+    return (RADAR_ZONE_X_WEST - margin <= x <= RADAR_ZONE_X_EAST + margin
+            and RADAR_ZONE_Y_SOUTH - margin <= y <= RADAR_ZONE_Y_NORTH + margin)
+
+# Walks that CROSS the boulevard, on the CARLA zebras at its two ends (the old
+# crossings at 189 / 841 had no zebra and are gone from the rebuilt net).
+#   x_east: north sidewalk east, zebra at 532 (:532_c2), south sidewalk west.
+#   x_west: south sidewalk west, zebra at 719 (:719_c1), north sidewalk east.
+# (id_suffix, walk edges, departPos, arrivalPos); spawn/despawn outside the zone.
 STRETCH_PED_CROSSING_CORRIDORS = [
-    ("x_west", "20 -20 -21"),
-    ("x_east", "-20 20 19 18"),
+    ("x_east", "-6 18 19 20 21 -21 -20 -19 -18 -5", 35.0, 45.0),
+    ("x_west", "1 2 -21 -20 -19 -18 18 19 20 21 3 0 10", 35.0, 75.0),
 ]
 
 # Monitored-stretch midpoint in CARLA world coordinates -- centre of the CARLA
@@ -270,9 +304,18 @@ def _edge_pools(net_file: str):
             continue
         if e.allows("passenger") and eid not in MONITORED_EDGES:
             drivable.append(eid)
-        if e.allows("pedestrian"):
+        # City pedestrians spawn and despawn anywhere on their edge, so any
+        # edge touching the radar zone is out of the pool.
+        if e.allows("pedestrian") and not _edge_touches_zone(e):
             ped.append(eid)
     return drivable, ped
+
+
+def _edge_touches_zone(edge):
+    if edge.getID() in RADAR_ZONE_EDGES:
+        return True
+    return any(in_radar_zone_carla(*sumo_to_carla_xy(x, y))
+               for x, y in edge.getShape())
 
 
 def _flow(fid, vtype, frm, to, vph, duration):
@@ -345,11 +388,11 @@ def generate_ambient(net_file: str, seed: int, veh_level: int,
             per_ph = group_ph / len(corridors)
             if per_ph <= 0.0:
                 continue
-            for suffix, edges in corridors:
+            for suffix, edges, dpos, apos in corridors:
                 lines.append(
                     f'    <personFlow id="ped_stretch_{suffix}" begin="0" '
-                    f'end="{duration}" perHour="{per_ph:.1f}" departPos="0">\n'
-                    f'        <walk edges="{edges}"/>\n'
+                    f'end="{duration}" perHour="{per_ph:.1f}" departPos="{dpos:.1f}">\n'
+                    f'        <walk edges="{edges}" arrivalPos="{apos:.1f}"/>\n'
                     f'    </personFlow>'
                 )
 
@@ -377,3 +420,91 @@ def inject_ambient(route_content: str, ambient_xml: str) -> str:
     if idx == -1:
         return route_content
     return route_content[:idx] + ambient_xml + "\n" + route_content[idx:]
+
+
+def check_spawn_exclusion(net_file: str, route_content: str,
+                          margin: float = SPAWN_EXCLUSION_MARGIN_M):
+    """Return a list of human-readable violations: every vehicle, flow, person
+    or personFlow in ``route_content`` whose spawn or despawn point falls inside
+    the radar zone. Empty list = clean.
+
+    Spawn = first edge at departPos, despawn = last edge at arrivalPos (default
+    0 / end). A non-numeric departPos/arrivalPos (random, free, ...) can land
+    anywhere on the edge, so the whole edge is checked.
+    """
+    import xml.etree.ElementTree as ET
+    if sumolib is None:
+        raise ImportError("sumolib is required for check_spawn_exclusion")
+    net = sumolib.net.readNet(net_file)
+    root = ET.fromstring(route_content)
+
+    def edge_points(eid, pos, at_end):
+        try:
+            e = net.getEdge(eid)
+        except KeyError:
+            return []
+        shape, length = e.getShape(), e.getLength()
+        if pos is None:
+            off = length if at_end else 0.0
+        else:
+            try:
+                off = float(pos)
+                if off < 0:
+                    off += length
+            except ValueError:
+                return [sumolib.geomhelper.positionAtShapeOffset(shape, length * k / 10.0)
+                        for k in range(11)]
+        off = max(0.0, min(off, length))
+        return [sumolib.geomhelper.positionAtShapeOffset(shape, off)]
+
+    def bad(eid, pos, at_end):
+        for x, y in edge_points(eid, pos, at_end):
+            cx, cy = sumo_to_carla_xy(x, y)
+            if in_radar_zone_carla(cx, cy, margin):
+                return (round(cx, 1), round(cy, 1))
+        return None
+
+    routes, dists = {}, {}
+    for r in root.iter("route"):
+        if r.get("id") and r.get("edges"):
+            routes[r.get("id")] = r.get("edges").split()
+    for d in root.iter("routeDistribution"):
+        dists[d.get("id")] = [x.get("refId") for x in d.findall("route")]
+
+    out = []
+    for el in list(root):
+        tag, ident = el.tag, el.get("id")
+        if tag in ("vehicle", "flow", "trip"):
+            cands = []
+            if el.get("route"):
+                rid = el.get("route")
+                cands = [routes.get(x, []) for x in dists.get(rid, [rid])]
+            elif el.find("route") is not None:
+                cands = [el.find("route").get("edges", "").split()]
+            elif el.get("from"):
+                cands = [[el.get("from"), el.get("to") or el.get("from")]]
+            for edges in cands:
+                if not edges:
+                    continue
+                p = bad(edges[0], el.get("departPos"), False)
+                if p:
+                    out.append(f"{tag} {ident}: spawns at CARLA {p} on edge {edges[0]}")
+                p = bad(edges[-1], el.get("arrivalPos"), True)
+                if p:
+                    out.append(f"{tag} {ident}: despawns at CARLA {p} on edge {edges[-1]}")
+        elif tag in ("person", "personFlow"):
+            stages = [c for c in el if c.tag in ("walk", "personTrip", "ride")]
+            if not stages:
+                continue
+            first, last = stages[0], stages[-1]
+            f_edge = (first.get("edges") or first.get("from") or "").split()[:1]
+            l_edge = (last.get("edges") or last.get("to") or "").split()[-1:]
+            if f_edge:
+                p = bad(f_edge[0], el.get("departPos"), False)
+                if p:
+                    out.append(f"{tag} {ident}: spawns at CARLA {p} on edge {f_edge[0]}")
+            if l_edge:
+                p = bad(l_edge[0], last.get("arrivalPos"), True)
+                if p:
+                    out.append(f"{tag} {ident}: despawns at CARLA {p} on edge {l_edge[0]}")
+    return out

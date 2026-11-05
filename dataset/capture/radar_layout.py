@@ -57,24 +57,55 @@ def apply_radar_pitch(radar_positions):
 # ---------------------------------------------------------------------------
 # Monitored-stretch rig placement.
 #
-# The SUMO-governed traffic runs through the monitored stretch = the east-west
-# boulevard (net edges 20 / -20). Derived from the SUMO net + the runtime
-# transform (carla_x = sumo_x - 109.34, carla_y = -(sumo_y - 135.96)):
-#   - the boulevard runs along CARLA +X, x in [-28.7, 26.4] (~55 m),
-#   - both carriageways span CARLA y in [5.4 (WB/edge20) .. 36.0 (EB/edge-20)],
-#   - cross-section mid ~y=20.7, along-stretch mid ~x=-1.0.
-# The rig straddles the WHOLE boulevard: one radar row on the south kerb, one on
-# the north kerb, N/2 stations along the length -- the same two-row pattern the
-# old rig used, moved onto the stretch. Every number below is env-tunable so the
-# rig can be nudged live in CARLA without editing code.
+# The SUMO-governed traffic runs along the east-west boulevard. Derived from the
+# SUMO net + the runtime transform (carla_x = sumo_x - 109.34,
+# carla_y = -(sumo_y - 135.96)):
+#   - the boulevard is one straight road along CARLA +X made of edges
+#     18 / 19 / 20 / 21 (WB) and -18 / -19 / -20 / -21 (EB),
+#   - it runs from the stop line of perimeter junction 719 (west end of edge 18,
+#     x = -88.6) to the stop line of perimeter junction 532 (east end of edge
+#     21, x = 83.1), ~172 m,
+#   - both carriageways span CARLA y in [5.4 (WB) .. 36.0 (EB)],
+#   - cross-section mid ~y=20.7.
+# The original 55 m stretch (edges 20 / -20 only) is x in [-28.7, 26.4].
+#
+# Layout per radar count:
+#   - 8, 12, 14 radars: stations spread end to end over the FULL road
+#     (FULL_STRETCH_X_WEST .. FULL_STRETCH_X_EAST). First and last stations sit
+#     on the junction stop lines.
+#   - 4 radars: kept on the original 55 m stretch (2 stations only, a 172 m
+#     spread would leave nothing covered in the middle).
+# The rig straddles the road: one radar row on the south kerb, one on the north
+# kerb, N/2 stations along the length. Every number below is env-tunable so the
+# rig can be nudged live in CARLA without editing code. DATASET_RIG_ANCHOR_X /
+# DATASET_RIG_LENGTH_M override the per-count defaults for ALL counts.
 # ---------------------------------------------------------------------------
-RIG_ANCHOR_X = -1.0        # stretch mid X (CARLA world)
+FULL_STRETCH_X_WEST = -88.6    # west end of edge 18 (junction 719 stop line)
+FULL_STRETCH_X_EAST = 83.1     # east end of edge 21 (junction 532 stop line)
+FULL_STRETCH_MIN_RADARS = 8    # counts >= this use the full road
+
+LEGACY_RIG_ANCHOR_X = -1.0     # original 55 m stretch mid X
+LEGACY_RIG_LENGTH_M = 52.0     # original along-stretch coverage
+
+RIG_ANCHOR_X = (FULL_STRETCH_X_WEST + FULL_STRETCH_X_EAST) / 2.0   # -2.75
 RIG_ANCHOR_Y = 20.7        # boulevard cross-section mid Y (CARLA world)
 RIG_HEADING_DEG = 0.0      # boulevard direction (0 = +X / east-west)
-RIG_LENGTH_M = 52.0        # along-stretch coverage (stations spread over this)
+RIG_LENGTH_M = FULL_STRETCH_X_EAST - FULL_STRETCH_X_WEST          # 171.7
 RIG_HALF_WIDTH_M = 20.5    # centre -> each radar row (rows ~y0.2 and ~y41.2)
 CAM_HEIGHT_M = 6.5         # camera mount height
 CAM_END_MARGIN_M = 16.0    # camera set-back beyond the stretch end
+# The overview camera stays framed on the ORIGINAL 55 m stretch for every radar
+# count (camera pipeline unchanged). Override with DATASET_CAM_ANCHOR_X /
+# DATASET_CAM_STRETCH_LENGTH_M.
+CAM_ANCHOR_X = LEGACY_RIG_ANCHOR_X
+CAM_STRETCH_LENGTH_M = LEGACY_RIG_LENGTH_M
+
+# Spawn exclusion zone. No car or pedestrian may spawn (or despawn) inside the
+# radar-monitored road: the full stretch x range, between the two radar rows,
+# grown by this margin on every side. Mirrored in traffic/ambient_traffic.py
+# (the traffic package does not import dataset code) -- keep the two in sync.
+SPAWN_EXCLUSION_MARGIN_M = 10.0
+
 
 # Radar aiming. Every radar looks ACROSS the boulevard toward the far kerb and
 # is skewed ALONG the stretch by RIG_SKEW_DEG so that all radars share one
@@ -102,10 +133,17 @@ def _env_float(name, default):
     return default
 
 
-def rig_anchor_from_env():
-    """(x, y) centre of the rig in CARLA world coords.
-    Override with DATASET_RIG_ANCHOR_X / DATASET_RIG_ANCHOR_Y."""
-    return (_env_float("DATASET_RIG_ANCHOR_X", RIG_ANCHOR_X),
+def uses_full_stretch(count):
+    """True when a rig of ``count`` radars spans the full road (see above)."""
+    return count is None or int(count) >= FULL_STRETCH_MIN_RADARS
+
+
+def rig_anchor_from_env(count=None):
+    """(x, y) centre of the rig in CARLA world coords for a ``count``-radar rig
+    (None = full-stretch default). Override with DATASET_RIG_ANCHOR_X /
+    DATASET_RIG_ANCHOR_Y."""
+    default_x = RIG_ANCHOR_X if uses_full_stretch(count) else LEGACY_RIG_ANCHOR_X
+    return (_env_float("DATASET_RIG_ANCHOR_X", default_x),
             _env_float("DATASET_RIG_ANCHOR_Y", RIG_ANCHOR_Y))
 
 
@@ -113,8 +151,9 @@ def rig_heading_deg_from_env():
     return _env_float("DATASET_RIG_HEADING_DEG", RIG_HEADING_DEG)
 
 
-def rig_length_m_from_env():
-    return max(1.0, _env_float("DATASET_RIG_LENGTH_M", RIG_LENGTH_M))
+def rig_length_m_from_env(count=None):
+    default = RIG_LENGTH_M if uses_full_stretch(count) else LEGACY_RIG_LENGTH_M
+    return max(1.0, _env_float("DATASET_RIG_LENGTH_M", default))
 
 
 def rig_half_width_m_from_env():
@@ -217,9 +256,10 @@ def stretch_radar_positions(south, north=None, height=None):
                          f"(got south={south}, north={north})")
     if south + north < 1:
         raise ValueError("need at least one radar")
-    ax, ay = rig_anchor_from_env()
+    count = south + north
+    ax, ay = rig_anchor_from_env(count)
     H = math.radians(rig_heading_deg_from_env())
-    length = rig_length_m_from_env()
+    length = rig_length_m_from_env(count)
     half_w = rig_half_width_m_from_env()
     z = radar_height_m_from_env() if height is None else float(height)
     south_yaw, north_yaw = stretch_radar_yaws()
@@ -335,14 +375,17 @@ def radar_yaw_summary(radar_positions):
 
 
 def stretch_camera_transform(height=None):
-    """A single overview camera set back beyond the start end of the stretch,
+    """A single overview camera set back beyond the west end of the ORIGINAL
+    55 m stretch,
     looking down its length. Returns the RAW transform the setup scripts expect
     (they apply a +180 deg yaw convention flip afterward), so the final camera
     boresight ends up along the stretch heading."""
-    ax, ay = rig_anchor_from_env()
+    # Framed on the original 55 m stretch regardless of radar count.
+    ax = _env_float("DATASET_CAM_ANCHOR_X", CAM_ANCHOR_X)
+    ay = _env_float("DATASET_RIG_ANCHOR_Y", RIG_ANCHOR_Y)
     heading = rig_heading_deg_from_env()
     H = math.radians(heading)
-    length = rig_length_m_from_env()
+    length = max(1.0, _env_float("DATASET_CAM_STRETCH_LENGTH_M", CAM_STRETCH_LENGTH_M))
     margin = _env_float("DATASET_CAM_END_MARGIN_M", CAM_END_MARGIN_M)
     z = _env_float("DATASET_CAM_HEIGHT_M", CAM_HEIGHT_M) if height is None else float(height)
     dx, dy = math.cos(H), math.sin(H)
@@ -354,3 +397,25 @@ def stretch_camera_transform(height=None):
         carla.Location(x=cx, y=cy, z=z),
         carla.Rotation(pitch=-15.0, yaw=input_yaw, roll=0.0),
     )
+
+
+def spawn_exclusion_margin_m_from_env():
+    return max(0.0, _env_float("DATASET_SPAWN_EXCLUSION_MARGIN_M", SPAWN_EXCLUSION_MARGIN_M))
+
+
+def spawn_exclusion_box(margin_m=None):
+    """(x_min, x_max, y_min, y_max) in CARLA world coords: the full radar-
+    monitored road between the two radar rows, grown by ``margin_m``.
+    Always the FULL road, whatever the radar count, so spawn behaviour does not
+    change with the rig."""
+    m = spawn_exclusion_margin_m_from_env() if margin_m is None else float(margin_m)
+    ay = _env_float("DATASET_RIG_ANCHOR_Y", RIG_ANCHOR_Y)
+    half_w = rig_half_width_m_from_env()
+    return (FULL_STRETCH_X_WEST - m, FULL_STRETCH_X_EAST + m,
+            ay - half_w - m, ay + half_w + m)
+
+
+def in_spawn_exclusion_zone(x, y, margin_m=None):
+    """True if CARLA world point (x, y) is inside the spawn exclusion zone."""
+    x0, x1, y0, y1 = spawn_exclusion_box(margin_m)
+    return x0 <= x <= x1 and y0 <= y <= y1
