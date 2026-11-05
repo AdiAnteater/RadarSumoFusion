@@ -178,7 +178,7 @@ class PedestrianRouteTests(unittest.TestCase):
     def test_crossing_walks_use_boulevard_crosswalks(self):
         import traci
         with _CrossingShare(1.0):
-            cfg, tmp = val.build_files(1, 40, 240, "BOTH", 0, 60, 0, 42, 0.1)
+            cfg, tmp = val.build_files(1, 40, 480, "BOTH", 0, 60, 0, 42, 0.1)
         log_path = tempfile.mktemp(suffix="_pedx.log")
         traci.start([val.sumo_binary(), "-c", cfg, "--start", "--log", log_path,
                      "--no-step-log"], label="pedx")
@@ -186,18 +186,21 @@ class PedestrianRouteTests(unittest.TestCase):
         try:
             import stretch_signals
             stretch_signals.apply_corridor_priority(val.runner.NET_FILE, verbose=False)
-            for _ in range(2400):
+            # The crossing walks cross the boulevard on the CARLA zebras at
+            # its two ends: :532_c2 (x_east) and :719_c1 (x_west). Their walk
+            # from outside the radar zone takes a few minutes.
+            for _ in range(4800):
                 traci.simulationStep()
                 for pid in traci.person.getIDList():
                     lane = traci.person.getLaneID(pid)
-                    if lane.startswith(":189_c0") or lane.startswith(":841_c2"):
+                    if lane.startswith(":532_c2") or lane.startswith(":719_c1"):
                         used.add(lane.split("_c")[0])
                 if len(used) == 2:
                     break
         finally:
             traci.close()
             val._cleanup(tmp)
-        self.assertEqual(used, {":189", ":841"},
+        self.assertEqual(used, {":532", ":719"},
                          msg=f"boulevard crosswalks used: {sorted(used)}")
 
     def _check_sidewalk_corridors(self):

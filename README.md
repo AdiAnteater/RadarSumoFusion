@@ -177,11 +177,12 @@ to east, south before north.
 Rig extent:
 
 - Direction: East-West
-- 8, 12 and 14 radars: the whole boulevard, junction 719 stop line to junction
-  532 stop line, X approximately -88.6 to 83.1 (~172 m, center -2.75). First and
-  last stations sit on the stop lines.
-- 4 radars: the original stretch (edges 20 / -20), X approximately -28.7 to 26.4,
-  center -1.0.
+- 8 or more radars in total (south + north rows): the whole boulevard, junction
+  719 stop line to junction 532 stop line, X approximately -88.6 to 83.1
+  (~172 m, center -2.75). The first and last radar of each row sit on the stop
+  lines.
+- Fewer than 8 radars: the original stretch (edges 20 / -20), X approximately
+  -28.7 to 26.4, center -1.0.
 - Y range: approximately 5.4 to 36.0 (radar rows at y 0.2 and 41.2)
 - The overview camera stays on the original stretch for every radar count.
 
