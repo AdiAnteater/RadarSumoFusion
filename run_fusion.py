@@ -63,6 +63,10 @@ def main() -> int:
                    help=f"radars on the south kerb row (0-{MAX_RADARS_PER_SIDE})")
     p.add_argument("--radars-north", type=int, default=None,
                    help=f"radars on the north kerb row (0-{MAX_RADARS_PER_SIDE})")
+    p.add_argument("--radar-pps", type=int, default=None,
+                   help="radar rays per second (CARLA points_per_second, 500-20000; "
+                        "default 15000 -> ~580 returns/scan at 20 Hz; 800 -> ~30, "
+                        "1300 -> ~50). Also overrides a --campaign's value.")
     p.add_argument("--radar-height", type=float, default=3.0,
                    help="radar mount height above the road (m)")
     _bool_flag(p, "label", True,
@@ -84,12 +88,14 @@ def main() -> int:
     p.add_argument("--sync-timeout", type=float, default=180.0)
     p.add_argument("--campaign", default="",
                    help="run a campaign JSON (saved from fusion_gui.py); all other "
-                        "flags are ignored except --carla-host/--carla-port")
+                        "flags are ignored except --carla-host/--carla-port/--radar-pps")
     args = p.parse_args()
 
     if args.campaign:
         ccfg = CampaignConfig.load(args.campaign)
         ccfg.carla_host, ccfg.carla_port = args.carla_host, args.carla_port
+        if args.radar_pps is not None:
+            ccfg.radar_points_per_second = args.radar_pps
         return 0 if run_campaign(ccfg).ok else 1
 
     south, north = split_radar_count(8 if args.radars is None else args.radars)
@@ -105,6 +111,7 @@ def main() -> int:
         ambient_seed=args.ambient_seed, render_radius=args.render_radius,
         no_cull=args.no_cull, sumo_gui=args.sumo_gui,
         radars_south=south, radars_north=north, radar_height_m=args.radar_height,
+        radar_points_per_second=args.radar_pps or 0,
         label=args.label, postprocess=args.postprocess,
         capture_base_dir=args.capture_base_dir,
         rate_hz=args.rate_hz, carla_host=args.carla_host, carla_port=args.carla_port,

@@ -70,12 +70,17 @@ def _base_env(cfg: FusionConfig, extra: dict | None = None) -> dict:
 
 def rig_env(cfg: FusionConfig) -> dict:
     """Radar rig layout for the setup script and capture (extrinsics export)."""
-    return {
+    env = {
         "DATASET_RADARS_SOUTH": cfg.radars_south,
         "DATASET_RADARS_NORTH": cfg.radars_north,
         "DATASET_RIG_HEIGHT_M": cfg.radar_height_m,
         "DATASET_EXPECTED_RADAR_COUNT": cfg.radar_count,
     }
+    # Radar ray budget; recorded in run_meta.json dataset_env by the capture.
+    pps = int(getattr(cfg, "radar_points_per_second", 0) or 0)
+    if pps > 0:
+        env["DATASET_RADAR_POINTS_PER_SECOND"] = pps
+    return env
 
 
 def _popen(cmd: list, cwd: Path, env: dict, *, new_group: bool) -> subprocess.Popen:

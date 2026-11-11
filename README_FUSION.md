@@ -102,17 +102,17 @@ offset, so equal rows give R1 south, R2 north, R3 south, ... (identical to the
 old fixed 4/8/12/14 layouts at the same height). Campaign files saved before
 this change with only `radar_count` load as an even split (south takes the odd
 one). 
-With 8 or more radars in total the rows span the whole boulevard (junction 719 stop line x -88.6 to junction 532 stop line x 83.1, ~172 m); with fewer they stay on the original 55 m stretch.
+Every rig spans the whole boulevard (junction 719 stop line x -88.6 to junction 532 stop line x 83.1, ~172 m). Below 8 radars in total the two rows are staggered (S N S N ...) instead of paired. Any radar within 1 m of a driving lane (side streets at 189 and 841) slides along its row to the nearest clear spot.
 
 All placement numbers live in one place (`dataset/capture/radar_layout.py`) and
 are env-tunable, so you can nudge the rig live in CARLA without editing code:
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `DATASET_RIG_ANCHOR_X` | -2.75 (4 radars: -1.0) | rig mid X (CARLA world) |
+| `DATASET_RIG_ANCHOR_X` | -2.75 | rig mid X (CARLA world) |
 | `DATASET_RIG_ANCHOR_Y` | 20.7 | boulevard cross-section mid Y |
 | `DATASET_RIG_HEADING_DEG` | 0.0 | stretch direction (0 = east-west) |
-| `DATASET_RIG_LENGTH_M` | 171.7 (4 radars: 52.0) | along-stretch coverage |
+| `DATASET_RIG_LENGTH_M` | 171.7 | along-stretch coverage |
 | `DATASET_RIG_HALF_WIDTH_M` | 20.5 | centre -> each radar row (rows ~y0.2 / y41.2) |
 | `DATASET_RIG_HEIGHT_M` | 3.0 | radar mount height (set from the GUI / `--radar-height`) |
 | `DATASET_RADARS_SOUTH` / `DATASET_RADARS_NORTH` | 4 / 4 | radars per kerb row (set from the GUI / campaign JSON / CLI) |

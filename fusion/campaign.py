@@ -36,7 +36,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import FusionConfig, radar_rig_errors, split_radar_count
+from .config import FusionConfig, radar_pps_errors, radar_rig_errors, split_radar_count
 from . import orchestrator as _orc
 
 SCENARIO_NAMES = {
@@ -102,6 +102,7 @@ class CampaignConfig:
     radars_south: int = 4
     radars_north: int = 4
     radar_height_m: float = 3.0
+    radar_points_per_second: int = 0   # 0 = capture default (15000); see FusionConfig
     rate_hz: float = 20.0
     warmup_s: float = 20.0        # per row, not recorded: traffic reaches the stretch
     label: bool = True
@@ -137,6 +138,7 @@ class CampaignConfig:
         for i, r in enumerate(self.runs, 1):
             errs += [f"run {i}: {e}" for e in r.validate()]
         errs += radar_rig_errors(self.radars_south, self.radars_north, self.radar_height_m)
+        errs += radar_pps_errors(self.radar_points_per_second)
         if not (1.0 <= self.rate_hz <= 200.0):
             errs.append(f"rate_hz must be 1-200 (got {self.rate_hz})")
         if self.warmup_s < 0:
@@ -148,6 +150,7 @@ class CampaignConfig:
         return FusionConfig(
             radars_south=self.radars_south, radars_north=self.radars_north,
             radar_height_m=self.radar_height_m, rate_hz=self.rate_hz,
+            radar_points_per_second=self.radar_points_per_second,
             label=self.label, postprocess=self.postprocess,
             capture_base_dir=self.capture_base_dir,
             carla_host=self.carla_host, carla_port=self.carla_port,
