@@ -35,6 +35,14 @@ def radar_rig_errors(south: int, north: int, height_m: float) -> list:
     return errs
 
 
+def radar_pps_errors(pps: int) -> list:
+    """0 means "capture default"; otherwise the capture clamps to 500-20000."""
+    pps = int(pps or 0)
+    if pps and not (500 <= pps <= 20000):
+        return [f"radar_points_per_second must be 0 (default) or 500-20000 (got {pps})"]
+    return []
+
+
 @dataclass
 class FusionConfig:
     # --- Traffic (SUMO) ---
@@ -54,6 +62,10 @@ class FusionConfig:
     radars_south: int = 4             # radars on the south kerb row (0-16)
     radars_north: int = 4             # radars on the north kerb row (0-16)
     radar_height_m: float = 3.0       # radar mount height above the road
+    # Rays each radar casts per second (CARLA points_per_second). 0 = capture
+    # default (15000 -> ~580 returns per scan at 20 Hz). Returns per scan are
+    # about 0.77 * pps / rate_hz, so 800 -> ~30 and 1300 -> ~50 per scan.
+    radar_points_per_second: int = 0
     label: bool = True                # run radar labeling after capture (DC default)
     postprocess: bool = True          # run post-processing after capture (DC default)
     capture_base_dir: str = ""        # optional override for the output root
@@ -94,6 +106,7 @@ class FusionConfig:
         if self.direction not in ("WB", "EB", "BOTH"):
             errs.append(f"direction must be WB|EB|BOTH (got {self.direction})")
         errs += radar_rig_errors(self.radars_south, self.radars_north, self.radar_height_m)
+        errs += radar_pps_errors(self.radar_points_per_second)
         if not (1.0 <= self.rate_hz <= 200.0):
             errs.append(f"rate_hz must be 1-200 (got {self.rate_hz})")
         # CARLA rejects fixed_delta_seconds above ~0.1 s in some builds; keep sane.

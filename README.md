@@ -177,12 +177,16 @@ to east, south before north.
 Rig extent:
 
 - Direction: East-West
-- 8 or more radars in total (south + north rows): the whole boulevard, junction
-  719 stop line to junction 532 stop line, X approximately -88.6 to 83.1
-  (~172 m, center -2.75). The first and last radar of each row sit on the stop
-  lines.
-- Fewer than 8 radars: the original stretch (edges 20 / -20), X approximately
-  -28.7 to 26.4, center -1.0.
+- Every rig spans the whole boulevard, junction 719 stop line to junction 532
+  stop line, X approximately -88.6 to 83.1 (~172 m, center -2.75). The first and
+  last radar sit on the stop lines.
+- 8 or more radars in total: each row is spread end to end, so equal rows pair
+  up across the road.
+- Fewer than 8 radars: the rows are staggered (S N S N ...), e.g. 2 + 2 at
+  x -88.6, -31.4, 25.9, 83.1.
+- No radar stands on an active road: any position within 1 m of a driving lane
+  (the side streets at junctions 189 and 841) slides along its row to the
+  nearest clear spot (`DATASET_RADAR_ROAD_CLEARANCE_M`).
 - Y range: approximately 5.4 to 36.0 (radar rows at y 0.2 and 41.2)
 - The overview camera stays on the original stretch for every radar count.
 
@@ -198,10 +202,10 @@ the layout code:
 
 | Environment variable       | Default         | Description                        |
 |----------------------------|-----------------|------------------------------------|
-| `DATASET_RIG_ANCHOR_X`     | -2.75 (4: -1.0) | Center X position                  |
+| `DATASET_RIG_ANCHOR_X`     | -2.75           | Center X position                  |
 | `DATASET_RIG_ANCHOR_Y`     | 20.7            | Center Y position                  |
 | `DATASET_RIG_HEADING_DEG`  | 0.0             | Rig heading                        |
-| `DATASET_RIG_LENGTH_M`     | 171.7 (4: 52.0) | Coverage length                    |
+| `DATASET_RIG_LENGTH_M`     | 171.7           | Coverage length                    |
 | `DATASET_RIG_HALF_WIDTH_M` | 20.5            | Distance from center to radar rows |
 | `DATASET_RIG_HEIGHT_M`     | 3.0             | Radar mounting height              |
 | `DATASET_RADARS_SOUTH`     | 4               | Radars on the south row            |
@@ -227,6 +231,38 @@ The fused pipeline records:
 Radar labeling and post-processing run automatically after capture using the
 existing DatasetCreation defaults. They can be disabled with `--no-label` and
 `--no-postprocess`.
+
+Radar density: `--radar-pps N` (or `radar_points_per_second` in a campaign)
+sets the rays each radar casts per second; the default 15000 gives ~580 returns
+per scan at 20 Hz, 1300 ~50 and 800 ~30. See `pointnet/README.md`, "Point
+budget sweep".
+
+## Analysing captures
+
+Both tools read labeled captures (`radar_data_labeled.csv`, `actor_frames.jsonl`,
+`segments.json`) and run from `dataset/` on a laptop or the server, no CARLA:
+
+```bash
+python -m tools.scenario_insights "Data/sensor_capture_*" --out Data/insights
+python -m tools.covisibility      "Data/sensor_capture_*" --out Data/covis
+python -m tools.make_figures --insights Data/insights --covis Data/covis --out Data/figures
+```
+
+Each capture is read once and cached in `<capture>/_analysis_cache/`, so later
+combined runs only merge the caches (`--no-cache` forces a re-read). With
+`pip install pyarrow` a 5 GB capture reads in about 40 s.
+
+- `scenario_insights`: returns per radar scan (raw and visible), returns per
+  object per scan and per fused frame by class and scenario, and scenario
+  diversity: Jensen-Shannon distances between per-scenario histograms of class
+  mix, speed, heading, lateral position, crowding, points per object, return
+  range and radial speed, with one diversity score for the set.
+- `covisibility`: per class, the share of objects seen by exactly 0, 1, ..., N
+  radars, measured (radars with returns on the object) next to predicted (radars
+  whose range + FOV cone contains it). The gap is occlusion, missed rays and the
+  FMCW filter. Also per-radar realization and a predicted-vs-measured confusion
+  matrix. Pass `--range` / `--hfov` / `--vfov` for captures taken with
+  non-default radar settings.
 
 ## Known Issues
 

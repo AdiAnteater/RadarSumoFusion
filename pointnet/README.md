@@ -63,6 +63,59 @@ Useful flags:
 
 Evaluate a saved model: `python pointnet/train.py --data ... --eval-only --checkpoint runs/pointnet_X/best.pt`
 
+## Point budget sweep (30-50 returns per scan)
+
+Real roadside radars report about 30-50 returns per scan; our default rig casts
+15,000 rays per radar per second, about 580 returns per scan at 20 Hz. To see
+how classification holds up at realistic density, capture the same traffic at a
+lower ray budget and train once per level.
+
+Returns per scan are roughly `0.77 * pps / rate_hz` (77% of rays hit something
+at 20 Hz on this stretch), so:
+
+| target returns / scan | `--radar-pps` |
+|---|---|
+| ~580 (current) | 15000 (default) |
+| ~50 | 1300 |
+| ~30 | 800 |
+
+The FMCW post-process then drops some of those (`visible == 0`). Check the real
+numbers on the first capture with `python -m tools.scenario_insights <capture>`
+(from `dataset/`; see `points_per_scan.csv`, raw and visible) and adjust
+`--radar-pps` if the visible count is off target.
+
+`campaigns/low_points_sweep.json` runs all 11 scenarios for 3 min each with one
+fixed seed, so every level sees the same SUMO traffic. One capture per level
+(Windows, CARLA running, from the repo root):
+
+```powershell
+$env:DATASET_CAPTURE_NAME = "pps15000"; python run_fusion.py --campaign campaigns/low_points_sweep.json
+$env:DATASET_CAPTURE_NAME = "pps1300";  python run_fusion.py --campaign campaigns/low_points_sweep.json --radar-pps 1300
+$env:DATASET_CAPTURE_NAME = "pps800";   python run_fusion.py --campaign campaigns/low_points_sweep.json --radar-pps 800
+Remove-Item Env:DATASET_CAPTURE_NAME
+```
+
+`--radar-pps` overrides the campaign's `radar_points_per_second` and is recorded
+in each capture's `run_meta.json`. Captures land in
+`dataset/Data/sensor_capture_<time>_pps<N>`.
+
+Build and train one model per level (server):
+
+```bash
+for n in 15000 1300 800; do
+  python pointnet/build_frames.py dataset/Data/sensor_capture_*_pps$n
+done
+python pointnet/train.py --data "dataset/Data/sensor_capture_*_pps15000/pointnet_frames" --out runs/pps15000
+python pointnet/train.py --data "dataset/Data/sensor_capture_*_pps1300/pointnet_frames" --num-points 512 --out runs/pps1300
+python pointnet/train.py --data "dataset/Data/sensor_capture_*_pps800/pointnet_frames"  --num-points 512 --out runs/pps800
+python pointnet/compare_runs.py runs/pps15000 runs/pps1300 runs/pps800 --csv runs/pps_sweep.csv
+```
+
+`--num-points 512` because a fused 8-radar frame at 30-50 returns per scan has
+only ~250-400 points; smaller frames are padded with masked repeats, so the
+default 4,096 still works but wastes compute. `compare_runs.py` prints test mIoU
+and per-class IoU / precision / recall next to the measured points per scan.
+
 ## Split: whole scenarios are held out
 
 Default: val = scenarios 4 and 10, test = scenario 9, train = the rest

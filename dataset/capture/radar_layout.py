@@ -69,20 +69,37 @@ def apply_radar_pitch(radar_positions):
 #   - cross-section mid ~y=20.7.
 # The original 55 m stretch (edges 20 / -20 only) is x in [-28.7, 26.4].
 #
-# Layout per radar count:
-#   - 8, 12, 14 radars: stations spread end to end over the FULL road
-#     (FULL_STRETCH_X_WEST .. FULL_STRETCH_X_EAST). First and last stations sit
-#     on the junction stop lines.
-#   - 4 radars: kept on the original 55 m stretch (2 stations only, a 172 m
-#     spread would leave nothing covered in the middle).
+# Layout: EVERY rig spans the full road (FULL_STRETCH_X_WEST ..
+# FULL_STRETCH_X_EAST); the first and last radar sit on the junction stop lines.
+#   - 8 or more radars in total: each row is spread end to end on its own, so
+#     equal rows pair up across the road (R1 south / R2 north at each station).
+#   - fewer than STAGGER_BELOW_RADARS: the rows are STAGGERED. All radars share
+#     one set of evenly spaced stations and alternate south / north, so 2+2
+#     gives S N S N at x -88.6, -31.4, 25.9, 83.1 (~57 m apart) instead of two
+#     pairs 172 m apart with nothing covered in between.
+# No radar may stand on an active road. Each position is checked against the
+# SUMO driving lanes (incl. junction turning lanes); one closer than
+# RADAR_ROAD_CLEARANCE_M to a lane edge is slid along its row to the nearest
+# clear spot. On this boulevard that is the side streets at junction 189
+# (both rows, x -55 .. -39) and junction 841 (y 41.2 row, x 37.5 .. 46.5).
 # The rig straddles the road: one radar row on the south kerb, one on the north
-# kerb, N/2 stations along the length. Every number below is env-tunable so the
-# rig can be nudged live in CARLA without editing code. DATASET_RIG_ANCHOR_X /
-# DATASET_RIG_LENGTH_M override the per-count defaults for ALL counts.
+# kerb. Every number below is env-tunable so the rig can be nudged live in
+# CARLA without editing code. DATASET_RIG_ANCHOR_X / DATASET_RIG_LENGTH_M
+# override the defaults.
 # ---------------------------------------------------------------------------
 FULL_STRETCH_X_WEST = -88.6    # west end of edge 18 (junction 719 stop line)
 FULL_STRETCH_X_EAST = 83.1     # east end of edge 21 (junction 532 stop line)
-FULL_STRETCH_MIN_RADARS = 8    # counts >= this use the full road
+STAGGER_BELOW_RADARS = 8       # total counts below this stagger the two rows
+# Kept for older imports: the count from which rows are no longer staggered.
+FULL_STRETCH_MIN_RADARS = STAGGER_BELOW_RADARS
+
+# Minimum distance (m) from a radar mount to the edge of any driving lane.
+RADAR_ROAD_CLEARANCE_M = 1.0
+# SUMO net used for the road check (same geometry as the CARLA map).
+SUMO_NET_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "traffic", "network", "Town10HD_Opt_fixed.net.xml")
+SUMO_NET_OFFSET = (109.34, 135.96)   # carla = (sumo_x - 109.34, -(sumo_y - 135.96))
 
 LEGACY_RIG_ANCHOR_X = -1.0     # original 55 m stretch mid X
 LEGACY_RIG_LENGTH_M = 52.0     # original along-stretch coverage
@@ -134,8 +151,13 @@ def _env_float(name, default):
 
 
 def uses_full_stretch(count):
-    """True when a rig of ``count`` radars spans the full road (see above)."""
-    return count is None or int(count) >= FULL_STRETCH_MIN_RADARS
+    """Every rig spans the full road now; kept for older callers."""
+    return True
+
+
+def staggers_rows(count):
+    """True when a rig of ``count`` radars alternates south / north stations."""
+    return count is not None and int(count) < STAGGER_BELOW_RADARS
 
 
 def rig_anchor_from_env(count=None):
@@ -223,6 +245,96 @@ def radars_per_side_from_env(default_total=8):
     return south, north
 
 
+_ROAD_SEGMENTS = None
+
+
+def _road_segments():
+    """Driving-lane centre segments in CARLA coords: [(ax, ay, bx, by, half_w)].
+
+    Read once from SUMO_NET_FILE (override DATASET_SUMO_NET_FILE). Sidewalks,
+    shoulders, medians, crossings and walking areas are skipped; junction
+    turning lanes are kept. Empty (with a warning) if the net is missing.
+    """
+    global _ROAD_SEGMENTS
+    if _ROAD_SEGMENTS is not None:
+        return _ROAD_SEGMENTS
+    import xml.etree.ElementTree as ET
+    path = os.environ.get("DATASET_SUMO_NET_FILE", "").strip() or SUMO_NET_FILE
+    segs = []
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as e:
+        print(f"[radar_layout] WARNING: road check off, cannot read {path}: {e}")
+        _ROAD_SEGMENTS = segs
+        return segs
+    ox, oy = SUMO_NET_OFFSET
+    for edge in root.findall("edge"):
+        if edge.get("function") in ("crossing", "walkingarea"):
+            continue
+        for lane in edge.findall("lane"):
+            allow, disallow = lane.get("allow", ""), lane.get("disallow", "")
+            if disallow == "all" or allow == "pedestrian":
+                continue
+            if allow and not any(v in allow for v in ("passenger", "bus", "bicycle")):
+                continue
+            half = float(lane.get("width", "3.2")) / 2.0
+            pts = [tuple(map(float, p.split(","))) for p in lane.get("shape", "").split()]
+            pts = [(x - ox, -(y - oy)) for x, y in pts]
+            for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+                segs.append((ax, ay, bx, by, half))
+    _ROAD_SEGMENTS = segs
+    return segs
+
+
+def road_clearance_m(x, y):
+    """Distance (m) from CARLA point (x, y) to the nearest driving-lane edge
+    (negative = on the lane). +inf when the road check is off."""
+    best = float("inf")
+    for ax, ay, bx, by, half in _road_segments():
+        dx, dy = bx - ax, by - ay
+        L = dx * dx + dy * dy
+        t = 0.0 if L == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L))
+        d = math.hypot(x - ax - t * dx, y - ay - t * dy) - half
+        if d < best:
+            best = d
+    return best
+
+
+RADAR_MIN_SPACING_M = 2.0   # two radars on one row never closer than this
+
+
+def _clear_of_road(t, side_xy, t_min, t_max, clearance, taken=(), step=0.25):
+    """Nearest offset to ``t`` (within [t_min, t_max]) whose mount point is at
+    least ``clearance`` from every driving lane and RADAR_MIN_SPACING_M from
+    the offsets already ``taken`` on that row. side_xy(t) -> (x, y)."""
+    def ok(c):
+        return (all(abs(c - o) >= RADAR_MIN_SPACING_M for o in taken)
+                and road_clearance_m(*side_xy(c)) >= clearance)
+    if ok(t):
+        return t
+    k = 1
+    while True:
+        moved = False
+        for cand in (t - k * step, t + k * step):
+            if t_min - 1e-9 <= cand <= t_max + 1e-9:
+                moved = True
+                if ok(cand):
+                    return cand
+        if not moved:
+            raise ValueError(f"no road-free mount spot along the row near offset {t:.1f} m")
+        k += 1
+
+
+def _staggered_slots(south, north, length):
+    """One shared set of evenly spaced stations, sides interleaved so each row
+    is spread over the whole length (S N S N ... for equal rows)."""
+    marks = [((i + 0.5) / south, 0) for i in range(south)]
+    marks += [((j + 0.5) / north, 1) for j in range(north)]
+    marks.sort()
+    offsets = _row_offsets(len(marks), length)
+    return [(t, side) for t, (_, side) in zip(offsets, marks)]
+
+
 def _row_offsets(n, length):
     if n <= 0:
         return []
@@ -235,9 +347,10 @@ def _row_offsets(n, length):
 def stretch_radar_positions(south, north=None, height=None):
     """Two-row straddle rig on the monitored stretch.
 
-    ``south`` / ``north`` radars are spread evenly along the stretch on the
-    south and north kerb. Called with a single count (``north`` omitted), that
-    total is split evenly (south takes the odd one).
+    ``south`` / ``north`` radars are spread along the whole stretch on the
+    south and north kerb (staggered below STAGGER_BELOW_RADARS in total, see
+    above), and moved off any driving lane. Called with a single count
+    (``north`` omitted), that total is split evenly (south takes the odd one).
 
     Returns {"R1": carla.Transform, ...}. Radars are numbered west to east
     (along the rig heading), south before north at the same offset, so equal
@@ -268,12 +381,32 @@ def stretch_radar_positions(south, north=None, height=None):
     nx, ny = -math.sin(H), math.cos(H)     # across the stretch (toward north row)
 
     # (offset along stretch, side 0=south/1=north)
-    slots = [(t, 0) for t in _row_offsets(south, length)]
-    slots += [(t, 1) for t in _row_offsets(north, length)]
-    slots.sort()
+    if staggers_rows(count):
+        slots = _staggered_slots(south, north, length)
+    else:
+        slots = [(t, 0) for t in _row_offsets(south, length)]
+        slots += [(t, 1) for t in _row_offsets(north, length)]
+
+    # Keep every mount off the road: slide it along its row if needed.
+    clearance = max(0.0, _env_float("DATASET_RADAR_ROAD_CLEARANCE_M", RADAR_ROAD_CLEARANCE_M))
+    placed = []
+    for t, side in slots:
+        sign = -1.0 if side == 0 else 1.0
+
+        def side_xy(tt, sign=sign):
+            return (ax + tt * dx + sign * half_w * nx, ay + tt * dy + sign * half_w * ny)
+        taken = [pt for pt, ps in placed if ps == side]
+        t_ok = _clear_of_road(t, side_xy, -length / 2.0, length / 2.0, clearance, taken)
+        if abs(t_ok - t) > 1e-6:
+            x0, _ = side_xy(t)
+            x1, y1 = side_xy(t_ok)
+            print(f"[radar_layout] radar at x={x0:.1f} y={y1:.1f} was within "
+                  f"{clearance:.1f} m of a driving lane; moved to x={x1:.1f}")
+        placed.append((t_ok, side))
+    placed.sort()
 
     positions = {}
-    for i, (t, side) in enumerate(slots, 1):
+    for i, (t, side) in enumerate(placed, 1):
         sign = -1.0 if side == 0 else 1.0
         x = ax + t * dx + sign * half_w * nx
         y = ay + t * dy + sign * half_w * ny
